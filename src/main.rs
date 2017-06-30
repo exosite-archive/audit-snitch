@@ -3,14 +3,11 @@ extern crate libc;
 extern crate protobuf;
 extern crate chan_signal;
 
-use std::io;
-use std::mem;
-use std::thread;
+use std::{io, mem, ptr, thread, time};
 
 use std::fs::File;
 use chan_signal::Signal;
 use std::io::{Read, Write};
-use std::os::unix::io::{FromRawFd, RawFd};
 
 #[repr(C)]
 struct audit_dispatcher_header {
@@ -20,33 +17,44 @@ struct audit_dispatcher_header {
     size: libc::uint32_t,
 }
 
-fn open_stdin() -> File {
+fn read_header<T: Read>(f: &mut T) -> io::Result<audit_dispatcher_header> {
     unsafe {
-        return File::from_raw_fd(0 as RawFd);
-    }
-}
-
-fn read_header(f: &mut File) -> io::Result<audit_dispatcher_header> {
-    unsafe {
-        let mut bytes = Vec::with_capacity(mem::size_of::<audit_dispatcher_header>());
-        let bytes_read = f.read(&mut bytes)?;
-        if bytes_read < mem::size_of::<audit_dispatcher_header>() {
-            panic!("Not enough header bytes read!");
+        let read_size = mem::size_of::<audit_dispatcher_header>();
+        loop  {
+            let mut bytes = Vec::with_capacity(read_size);
+            let mut chunk = f.take(read_size as u64);
+            let bytes_read = match chunk.read_to_end(&mut bytes) {
+                Ok(b) => b,
+                Err(ioerr) => match ioerr.kind() {
+                    io::ErrorKind::WouldBlock => {
+                        thread::sleep(time::Duration::from_millis(1000));
+                        continue;
+                    },
+                    _ => 0,
+                },
+            };
+            if bytes_read < mem::size_of::<audit_dispatcher_header>() {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Input stream terminated"));
+            }
+            //let hdr: audit_dispatcher_header = mem::transmute(bytes.as_slice());
+            //println!("{}", bytes.len());
+            //println!("{:?}", bytes);
+            let hdr: audit_dispatcher_header = ptr::read(bytes.as_ptr() as *const _);
+            return Ok(audit_dispatcher_header{
+                ver: hdr.ver,
+                hlen: hdr.hlen,
+                msg_type: hdr.msg_type,
+                size: hdr.size,
+            });
         }
-        let hdr: audit_dispatcher_header = mem::transmute(bytes.as_slice());
-        return Ok(audit_dispatcher_header{
-            ver: hdr.ver,
-            hlen: hdr.hlen,
-            msg_type: hdr.msg_type,
-            size: hdr.size,
-        });
     }
 }
 
-fn read_message(f: &mut File, expected_size: usize) -> io::Result<String> {
+fn read_message<T: Read>(f: &mut T, expected_size: usize) -> io::Result<String> {
     unsafe {
         let mut msg_bytes = Vec::with_capacity(expected_size);
-        let bytes_read = f.read(&mut msg_bytes)?;
+        let mut chunk = f.take(expected_size as u64);
+        let bytes_read = chunk.read_to_end(&mut msg_bytes)?;
         if bytes_read < expected_size {
             panic!("Not enough message bytes read!");
         }
@@ -56,7 +64,7 @@ fn read_message(f: &mut File, expected_size: usize) -> io::Result<String> {
 }
 
 fn main() {
-    let mut stdin = open_stdin();
+    let mut stdin = io::stdin();
     let mut should_run = true;
 
     thread::spawn(move || {
@@ -78,12 +86,20 @@ fn main() {
     while should_run {
         let hdr = match read_header(&mut stdin) {
             Ok(hdr_struct) => hdr_struct,
-            Err(_) => panic!("Failed to read header!"),
+            Err(_) => {
+                should_run = false;
+                break;
+            },
         };
+        if hdr.ver != 0 {
+            panic!("Unsupported audit version: {}", hdr.ver);
+        }
+        //println!("Message size: {}", hdr.size);
         let msg = match read_message(&mut stdin, hdr.size as usize) {
             Ok(msg_str) => msg_str,
             Err(_) => panic!("Failed to read message!"),
         };
         write!(outfile, "{}\n", msg).unwrap();
+        //println!("{}", msg);
     }
 }
