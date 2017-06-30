@@ -1,0 +1,14 @@
+[package]
+name = "audit-snitch"
+version = "0.1.0"
+authors = ["Alexander Wauck <alex@impulse101.org>"]
+build = "build.rs"
+
+[dependencies]
+regex = "0.2"
+libc = "0.2.0"
+protobuf = "1.3.1"
+chan-signal = "0.2.0"
+
+[build-dependencies]
+protoc-rust = "1.3.1"
