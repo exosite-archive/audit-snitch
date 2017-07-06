@@ -9,6 +9,12 @@ regex = "0.2"
 libc = "0.2.0"
 protobuf = "1.3.1"
 chan-signal = "0.2.0"
+lazy_static = "0.2"
+
+[dependencies.openssl]
+version = "0.9"
+features = ["v101", "v102", "v110"]
 
 [build-dependencies]
 protoc-rust = "1.3.1"
+openssl = "0.9"
