@@ -4,6 +4,7 @@ extern crate libc;
 extern crate protobuf;
 extern crate chan_signal;
 extern crate openssl;
+extern crate byteorder;
 
 mod ssl_madness;
 mod audit;

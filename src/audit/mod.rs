@@ -7,6 +7,7 @@ use std::error::Error;
 
 use regex::{Regex, Captures};
 use protobuf::{CodedOutputStream, Message};
+use byteorder::{NetworkEndian, WriteBytesExt};
 use self::protos::{AuditTimestamp, ProgramRun, SnitchReport};
 
 use libc;
@@ -424,8 +425,10 @@ pub fn dispatch_audit_event<T: Write>(stream: &mut T, rec1: &AuditRecord, rec2: 
     write_pb_and_flush(&mut CodedOutputStream::vec(&mut payload), &progrec)?;
     msg.set_payload(payload);
 
-    let mut cos = CodedOutputStream::new(stream);
-    write_pb_and_flush(&mut cos, &msg)?;
+    let mut full_message = Vec::new();
+    write_pb_and_flush(&mut CodedOutputStream::vec(&mut full_message), &msg)?;
+    stream.write_u32::<NetworkEndian>(full_message.len() as u32)?;
+    stream.write_all(&full_message)?;
 
     return Ok(());
 }
