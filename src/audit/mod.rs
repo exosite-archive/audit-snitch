@@ -1,9 +1,11 @@
-use std::{io, mem, ptr, thread, time, i64, i32};
+use std::{io, mem, thread, time, i64, i32};
 
 use std::io::{Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 use std::error::Error;
+use std::slice;
+use std::str;
 
 use regex::{Regex, Captures};
 use protobuf::{CodedOutputStream, Message};
@@ -17,7 +19,9 @@ mod protos;
 // From linux/audit.h
 pub const AUDIT_SYSCALL: u32 = 1300;
 pub const AUDIT_EXECVE: u32 = 1309;
+#[allow(dead_code)]
 pub const AUDIT_ARCH_64BIT: u32 = 0x80000000;
+#[allow(dead_code)]
 pub const AUDIT_ARCH_LE: u32 = 0x40000000;
 
 // From linux/elf-em.h
@@ -25,6 +29,7 @@ pub const EM_386: u32 = 3;
 pub const EM_X86_64: u32 = 62;
 
 // From audit.proto
+#[allow(dead_code)]
 pub const REPORT_TYPE_ERROR: i32 = 0;
 pub const REPORT_TYPE_PROGRAMRUN: i32 = 1;
 
@@ -37,49 +42,55 @@ pub struct audit_dispatcher_header {
 }
 
 pub fn read_header<T: Read>(f: &mut T) -> io::Result<audit_dispatcher_header> {
-    unsafe {
-        let read_size = mem::size_of::<audit_dispatcher_header>();
-        loop  {
-            let mut bytes = Vec::with_capacity(read_size);
-            let mut chunk = f.take(read_size as u64);
-            let bytes_read = match chunk.read_to_end(&mut bytes) {
-                Ok(b) => b,
-                Err(ioerr) => match ioerr.kind() {
-                    io::ErrorKind::WouldBlock => {
-                        thread::sleep(time::Duration::from_millis(1000));
-                        continue;
-                    },
-                    _ => 0,
+    let read_size = mem::size_of::<audit_dispatcher_header>();
+    loop  {
+        let mut bytes = Vec::with_capacity(read_size);
+        let mut chunk = f.take(read_size as u64);
+        io::stdout().flush();
+        let bytes_read = match chunk.read_to_end(&mut bytes) {
+            Ok(b) => b,
+            Err(ioerr) => match ioerr.kind() {
+                io::ErrorKind::WouldBlock => {
+                    thread::sleep(time::Duration::from_millis(1000));
+                    continue;
                 },
-            };
-            if bytes_read < mem::size_of::<audit_dispatcher_header>() {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Input stream terminated"));
-            }
-            //let hdr: audit_dispatcher_header = mem::transmute(bytes.as_slice());
-            //println!("{}", bytes.len());
-            //println!("{:?}", bytes);
-            let hdr: audit_dispatcher_header = ptr::read(bytes.as_ptr() as *const _);
+                _ => 0,
+            },
+        };
+        if bytes_read < mem::size_of::<audit_dispatcher_header>() {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Input stream terminated"));
+        }
+        //let hdr: audit_dispatcher_header = mem::transmute(bytes.as_slice());
+        //println!("{}", bytes.len());
+        //println!("{:?}", bytes);
+        unsafe {
+            let data_ptr: *const u8 = bytes.as_ptr();
+            let hdr_ptr: *const audit_dispatcher_header = data_ptr as *const _;
+            let hdr: &audit_dispatcher_header = &*hdr_ptr;
             return Ok(audit_dispatcher_header{
-                ver: hdr.ver,
-                hlen: hdr.hlen,
-                msg_type: hdr.msg_type,
-                size: hdr.size,
+                ver: hdr.ver.clone(),
+                hlen: hdr.hlen.clone(),
+                msg_type: hdr.msg_type.clone(),
+                size: hdr.size.clone(),
             });
         }
     }
 }
 
 pub fn read_message<T: Read>(f: &mut T, expected_size: usize) -> io::Result<String> {
-    unsafe {
-        let mut msg_bytes = Vec::with_capacity(expected_size);
-        let mut chunk = f.take(expected_size as u64);
-        let bytes_read = chunk.read_to_end(&mut msg_bytes)?;
-        if bytes_read < expected_size {
-            panic!("Not enough message bytes read!");
-        }
-        let msg = String::from_raw_parts(msg_bytes.as_mut_ptr(), expected_size, expected_size);
-        return Ok(msg.clone());
+    let mut msg_bytes = Vec::with_capacity(expected_size);
+    let mut chunk = f.take(expected_size as u64);
+    let bytes_read = chunk.read_to_end(&mut msg_bytes)?;
+    if bytes_read < expected_size {
+        panic!("Not enough message bytes read!");
     }
+    return unsafe {
+        let msg_slice = slice::from_raw_parts(msg_bytes.as_mut_ptr(), expected_size);
+        match str::from_utf8(msg_slice) {
+            Ok(valid_str) => Ok(valid_str.to_owned()),
+            Err(utferr) => Err(io::Error::new(io::ErrorKind::InvalidData, String::from(utferr.description()))),
+        }
+    };
 }
 
 pub enum SyscallArch {
@@ -153,30 +164,32 @@ fn extract_kv_value<'a>(cap: &'a Captures) -> &'a str {
 }
 
 // audit(1498852023.639:741): arch=c000003e syscall=59 success=yes exit=0 a0=7fffdaa8cbd0 a1=7f7af2a41cf8 a2=1b9f030 a3=598 items=2 ppid=7113 pid=7114 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts3 ses=2 comm="git" exe="/usr/bin/git" key=(null)
-fn parse_syscall_record(message: &str) -> Option<SyscallRecord> {
+fn parse_syscall_record(message: &str) -> Result<SyscallRecord, String> {
     lazy_static!{
         // These should be the same as below.
-        static ref RE_TOP: Regex = Regex::new(r"audit\((?P<timestamp>\d+)\.(?P<timestamp_frac>\d+)\):(?P<id>\d+)(?P<kv>\s+.+)").unwrap();
-        static ref RE_KV: Regex = Regex::new("\\s+(?P<key>[^=]+)=(?P<value>\\S+|(\"(?P<inner>[^\"]+)\"))").unwrap();
+        static ref RE_TOP: Regex = Regex::new(r"audit\((?P<timestamp>\d+)\.(?P<timestamp_frac>\d+):(?P<id>\d+)\):(?P<kv>\s+.+)").unwrap();
+        static ref RE_KV: Regex = Regex::new("\\s+(?P<key>[^=]+)=(?P<value>[^\"]\\S*|(\"(?P<inner>[^\"]+)\"))").unwrap();
     }
 
-    // TODO: properly report all parsing failures
     let caps = match RE_TOP.captures(message) {
-        None => return None,
+        None => return Err(String::from("Failed to parse log line")),
         Some(c) => c,
     };
 
-    let timestamp = match i64::from_str_radix(caps.name("timestamp").unwrap().as_str(), 10) {
+    let timestamp_str = caps.name("timestamp").unwrap().as_str();
+    let timestamp = match i64::from_str_radix(timestamp_str, 10) {
         Ok(i) => i,
-        Err(_) => return None,
+        Err(_) => return Err(format!("Timestamp value {} is not a valid base-10 number", timestamp_str)),
     };
-    let timestamp_frac = match i64::from_str_radix(caps.name("timestamp_frac").unwrap().as_str(), 10) {
+    let timestamp_frac_str = caps.name("timestamp_frac").unwrap().as_str();
+    let timestamp_frac = match i64::from_str_radix(timestamp_frac_str, 10) {
         Ok(i) => i,
-        Err(_) => return None,
+        Err(_) => return Err(format!("Timestamp fraction value {} is not a valid base-10 number", timestamp_frac_str)),
     };
-    let id = match i32::from_str_radix(caps.name("id").unwrap().as_str(), 10) {
+    let id_str = caps.name("id").unwrap().as_str();
+    let id = match i32::from_str_radix(id_str, 10) {
         Ok(i) => i,
-        Err(_) => return None,
+        Err(_) => return Err(format!("ID value {} is not a valid base-10 number", id_str)),
     };
     let kv = caps.name("kv").unwrap().as_str();
 
@@ -211,6 +224,13 @@ fn parse_syscall_record(message: &str) -> Option<SyscallRecord> {
     for cap in RE_KV.captures_iter(kv) {
         let key = cap.name("key").unwrap().as_str();
         let value = extract_kv_value(&cap);
+
+        // Sometimes, the value will be "(null)".  So far, I've only
+        // seen this with the "key" value as in the example in the
+        //comment above this function.
+        if value == "(null)" {
+            continue;
+        }
 
         match key {
             "arch" => {
@@ -248,34 +268,36 @@ fn parse_syscall_record(message: &str) -> Option<SyscallRecord> {
         }
     }
 
-    return Some(rec);
+    return Ok(rec);
 }
 
 // audit(1498852023.639:741): argc=3 a0="git" a1="rev-parse" a2="--git-dir"
-fn parse_execve_record(message: &str) -> Option<ExecveRecord> {
+fn parse_execve_record(message: &str) -> Result<ExecveRecord, String> {
     lazy_static!{
-        // These should be the same as below.
-        static ref RE_TOP: Regex = Regex::new(r"audit\((?P<timestamp>\d+)\.(?P<timestamp_frac>\d+)\):(?P<id>\d+)(?P<kv>\s+.+)").unwrap();
-        static ref RE_KV: Regex = Regex::new("\\s+(?P<key>[^=]+)=(?P<value>\\S+|(\"(?P<inner>[^\"]+)\"))").unwrap();
+        // These should be the same as above.
+        static ref RE_TOP: Regex = Regex::new(r"audit\((?P<timestamp>\d+)\.(?P<timestamp_frac>\d+):(?P<id>\d+)\):(?P<kv>\s+.+)").unwrap();
+        static ref RE_KV: Regex = Regex::new("\\s+(?P<key>[^=]+)=(?P<value>[^\"]\\S*|(\"(?P<inner>[^\"]+)\"))").unwrap();
     }
 
-    // TODO: properly report all parsing failures
     let caps = match RE_TOP.captures(message) {
-        None => return None,
+        None => return Err(String::from("Failed to parse log line")),
         Some(c) => c,
     };
 
-    let timestamp = match i64::from_str_radix(caps.name("timestamp").unwrap().as_str(), 10) {
+    let timestamp_str = caps.name("timestamp").unwrap().as_str();
+    let timestamp = match i64::from_str_radix(timestamp_str, 10) {
         Ok(i) => i,
-        Err(_) => return None,
+        Err(_) => return Err(format!("Timestamp value {} is not a valid base-10 number", timestamp_str)),
     };
-    let timestamp_frac = match i64::from_str_radix(caps.name("timestamp_frac").unwrap().as_str(), 10) {
+    let timestamp_frac_str = caps.name("timestamp_frac").unwrap().as_str();
+    let timestamp_frac = match i64::from_str_radix(timestamp_frac_str, 10) {
         Ok(i) => i,
-        Err(_) => return None,
+        Err(_) => return Err(format!("Timestamp fraction value {} is not a valid base-10 number", timestamp_frac_str)),
     };
-    let id = match i32::from_str_radix(caps.name("id").unwrap().as_str(), 10) {
+    let id_str = caps.name("id").unwrap().as_str();
+    let id = match i32::from_str_radix(id_str, 10) {
         Ok(i) => i,
-        Err(_) => return None,
+        Err(_) => return Err(format!("ID value {} is not a valid base-10 number", id_str)),
     };
     let kv = caps.name("kv").unwrap().as_str();
 
@@ -292,15 +314,16 @@ fn parse_execve_record(message: &str) -> Option<ExecveRecord> {
     for cap in RE_KV.captures_iter(kv) {
         let key = String::from(cap.name("key").unwrap().as_str());
         let value = String::from(extract_kv_value(&cap));
+        println!("Extracted {} from kv", value);
 
         kv_dict.insert(key, value);
     }
 
     let num_args = match kv_dict.get("argc") {
-        None => return None,
+        None => return Err(String::from("Log line did not contain argc!")),
         Some(c) => match i32::from_str_radix(c, 10) {
             Ok(i) => i,
-            Err(_) => return None,
+            Err(_) => return Err(format!("argc value {} is not a valid base-10 number", c)),
         },
     };
 
@@ -312,21 +335,21 @@ fn parse_execve_record(message: &str) -> Option<ExecveRecord> {
         };
     }
 
-    return Some(rec);
+    return Ok(rec);
 }
 
-pub fn parse_message(message_type: u32, message: &str) -> Option<AuditRecord> {
+pub fn parse_message(message_type: u32, message: &str) -> Result<AuditRecord, String> {
     use self::AuditRecord::*;
     match message_type {
         AUDIT_SYSCALL => match parse_syscall_record(message) {
-            None => None,
-            Some(syscall_record) => Some(Syscall(syscall_record)),
+            Err(errstr) => Err(errstr),
+            Ok(syscall_record) => Ok(Syscall(syscall_record)),
         },
         AUDIT_EXECVE => match parse_execve_record(message) {
-            None => None,
-            Some(execve_record) => Some(Execve(execve_record)),
+            Err(errstr) => Err(errstr),
+            Ok(execve_record) => Ok(Execve(execve_record)),
         },
-        _ => None,
+        _ => Err(format!("Unknown message type: {}", message_type)),
     }
 }
 
@@ -360,6 +383,8 @@ pub fn dispatch_audit_event<T: Write>(stream: &mut T, rec1: &AuditRecord, rec2: 
         },
     };
 
+    println!("Dispatching a message for event {}...", syscall.id);
+
     // We use the timestamp from the syscall record
     // because it and the execve record should be
     // extremely close together.  In fact, they will
@@ -376,6 +401,7 @@ pub fn dispatch_audit_event<T: Write>(stream: &mut T, rec1: &AuditRecord, rec2: 
         I386 => String::from("i386"),
         Amd64 => String::from("amd64"),
     });
+    progrec.set_syscall(syscall.syscall);
     progrec.set_success(syscall.success);
     progrec.set_exit(syscall.exit);
     progrec.set_pid(syscall.pid);
@@ -416,8 +442,58 @@ pub fn dispatch_audit_event<T: Write>(stream: &mut T, rec1: &AuditRecord, rec2: 
     for arg in &execve.args {
         // Again with the cloning!  Curse you, protobuf!
         pr_args.push(arg.clone());
+        println!("Arg: {}", arg);
     }
     progrec.set_args(pr_args);
+
+    if !progrec.has_timestamp() {
+        println!("Missing timestamp!");
+    }
+    if !progrec.has_arch() {
+        println!("Missing arch!");
+    }
+    if !progrec.has_syscall() {
+        println!("Missing syscall!");
+    }
+    if !progrec.has_success() {
+        println!("Missing success!");
+    }
+    if !progrec.has_exit() {
+        println!("Missing exit!");
+    }
+    if !progrec.has_pid() {
+        println!("Missing pid!");
+    }
+    if !progrec.has_ppid() {
+        println!("Missing ppid!");
+    }
+    if !progrec.has_uid() {
+        println!("Missing uid!");
+    }
+    if !progrec.has_gid() {
+        println!("Missing gid!");
+    }
+    if !progrec.has_auid() {
+        println!("Missing auid!");
+    }
+    if !progrec.has_euid() {
+        println!("Missing euid!");
+    }
+    if !progrec.has_egid() {
+        println!("Missing egid!");
+    }
+    if !progrec.has_suid() {
+        println!("Missing suid!");
+    }
+    if !progrec.has_sgid() {
+        println!("Missing sgid!");
+    }
+    if !progrec.has_fsuid() {
+        println!("Missing fsuid!");
+    }
+    if !progrec.has_fsgid() {
+        println!("Missing fsgid!");
+    }
 
     let mut msg = SnitchReport::new();
     msg.set_message_type(REPORT_TYPE_PROGRAMRUN);
@@ -427,8 +503,10 @@ pub fn dispatch_audit_event<T: Write>(stream: &mut T, rec1: &AuditRecord, rec2: 
 
     let mut full_message = Vec::new();
     write_pb_and_flush(&mut CodedOutputStream::vec(&mut full_message), &msg)?;
+    println!("About to write...");
     stream.write_u32::<NetworkEndian>(full_message.len() as u32)?;
     stream.write_all(&full_message)?;
+    println!("Wrote everything!");
 
     return Ok(());
 }

@@ -57,6 +57,7 @@ fn create_ssl_context_common() -> Result<ssl::SslContextBuilder, ErrorStack> {
     return Ok(ctx);
 }
 
+#[allow(dead_code)]
 pub fn create_ssl_context() -> Result<ssl::SslContext, ErrorStack> {
     let builder = create_ssl_context_common()?;
     return Ok(builder.build());
