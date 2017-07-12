@@ -1,30 +1,81 @@
 use std::error::Error;
+use std::fmt;
 
 use openssl::pkey::{PKey, PKeyRef};
-use openssl::ec::{EcGroup, EcKey};
+use openssl::ec::{EcGroup, EcKey, NAMED_CURVE};
 use openssl::x509::{X509ReqBuilder, X509Req, X509NameBuilder, X509Extension};
 use openssl::stack::Stack;
 use openssl::hash::MessageDigest;
 use openssl::sign::Signer;
+use openssl::error::ErrorStack;
 
-use openssl::nid;
+use openssl::{nid, rsa};
 use base64;
 
-pub fn generate_client_key() -> Result<PKey, String> {
-    let ecgroup = match EcGroup::from_curve_name(nid::SECP256K1) {
-        Ok(ecg) => ecg,
-        Err(_) => return Err(String::from("Unable to create SECP256K1 elliptic curve!")),
-    };
-    return match EcKey::generate(&ecgroup) {
-        Ok(k) => match PKey::from_ec_key(k) {
-            Ok(pk) => Ok(pk),
-            Err(key_err) => Err(String::from(key_err.description())),
-        },
-        Err(key_err) => Err(String::from(key_err.description())),
-    };
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub enum ECurve {
+    Secp256k1,
+    Secp384r1,
+    Prime256v1,
 }
 
-pub fn create_csr(pubkey: &PKeyRef, id: &str) -> Result<X509Req, String> {
+impl ECurve {
+    fn to_ecgroup(self) -> Result<EcGroup, ErrorStack> {
+        let mut ecgroup = EcGroup::from_curve_name(match self {
+            ECurve::Secp256k1 => nid::SECP256K1,
+            ECurve::Secp384r1 => nid::SECP384R1,
+            ECurve::Prime256v1 => nid::X9_62_PRIME256V1,
+        })?;
+        ecgroup.set_asn1_flag(NAMED_CURVE);
+        return Ok(ecgroup);
+    }
+}
+
+impl fmt::Display for ECurve {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &ECurve::Secp256k1 => write!(f, "secp256k1"),
+            &ECurve::Secp384r1 => write!(f, "secp384r1"),
+            &ECurve::Prime256v1 => write!(f, "prime256v1"),
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub enum KeyType {
+    Ecdsa(ECurve),
+    Rsa(u32),
+}
+
+pub fn generate_client_key(key_type: KeyType) -> Result<PKey, String> {
+    use self::KeyType::*;
+
+    match key_type {
+        Ecdsa(curve_type) => {
+            let ecgroup = match curve_type.to_ecgroup() {
+                Ok(ecg) => ecg,
+                Err(_) => return Err(format!("Unable to create {} elliptic curve!", curve_type)),
+            };
+            match EcKey::generate(&ecgroup) {
+                Ok(k) => match PKey::from_ec_key(k) {
+                    Ok(pk) => Ok(pk),
+                    Err(key_err) => Err(String::from(key_err.description())),
+                },
+                Err(key_err) => Err(String::from(key_err.description())),
+            }
+        },
+        Rsa(key_size) => match rsa::Rsa::generate(key_size) {
+            Ok(k) => match PKey::from_rsa(k) {
+                Ok(pk) => Ok(pk),
+                Err(key_err) => Err(String::from(key_err.description())),
+            },
+            Err(key_err) => Err(String::from(key_err.description())),
+        },
+    }
+}
+
+pub fn create_csr(privkey: &PKeyRef, pubkey: &PKeyRef, id: &str) -> Result<X509Req, String> {
     // HOW CAN THIS POSSIBLY FAIL?
     let mut builder = X509ReqBuilder::new().unwrap();
     // DITTO!
@@ -34,6 +85,7 @@ pub fn create_csr(pubkey: &PKeyRef, id: &str) -> Result<X509Req, String> {
     namebuilder.append_entry_by_text("CN", id).unwrap();
     let name = namebuilder.build();
     builder.set_subject_name(&name).unwrap();
+    builder.set_version(0).unwrap();
 
     let mut ext_stack = Stack::new().unwrap();
     {
@@ -44,6 +96,10 @@ pub fn create_csr(pubkey: &PKeyRef, id: &str) -> Result<X509Req, String> {
         ext_stack.push(X509Extension::new_nid(None, Some(&ctx), nid::EXT_KEY_USAGE, "clientAuth,emailProtection").unwrap()).unwrap();
     }
     match builder.add_extensions(&ext_stack) {
+        Ok(_) => (),
+        Err(openssl_err) => return Err(String::from(openssl_err.description())),
+    };
+    match builder.sign(privkey, MessageDigest::sha256()) {
         Ok(_) => (),
         Err(openssl_err) => return Err(String::from(openssl_err.description())),
     };
