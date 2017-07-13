@@ -3,6 +3,7 @@ name = "audit-snitch"
 version = "0.1.0"
 authors = ["Alexander Wauck <alex@impulse101.org>"]
 build = "build.rs"
+license = "GPL-3.0"
 
 [dependencies]
 regex = "0.2"
