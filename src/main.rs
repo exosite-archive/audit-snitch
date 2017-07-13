@@ -8,6 +8,7 @@ extern crate byteorder;
 #[macro_use] extern crate slog;
 extern crate slog_term;
 extern crate slog_journald;
+extern crate slog_async;
 extern crate toml;
 #[macro_use] extern crate serde_derive;
 extern crate clap;
@@ -20,7 +21,7 @@ mod crypto;
 
 use std::{io, thread};
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::collections::HashMap;
@@ -28,10 +29,12 @@ use std::error::Error;
 use std::path::Path;
 use std::convert::AsRef;
 use std::str;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chan_signal::Signal;
 use openssl::ssl;
 use clap::{Arg, App, SubCommand};
+use slog::{Logger, LevelFilter, Drain};
 
 #[derive(Deserialize)]
 struct ServerSpec {
@@ -48,6 +51,11 @@ struct Config {
     client_key: String,
     ca_cert: String,
     log_file: String,
+    debug_logging: bool,
+}
+
+fn get_pid() -> i32 {
+    unsafe { libc::getpid() as i32 }
 }
 
 fn write_data<P: AsRef<Path>>(file_path: P, data: &[u8]) -> io::Result<()> {
@@ -127,6 +135,23 @@ fn provision(config: &Config, id: &str) -> Result<(), String> {
     };
 }
 
+fn clean_records(records: &mut HashMap<i32, Box<audit::AuditRecord>>) {
+    let now = SystemTime::now();
+    let mut ids_to_remove = Vec::new();
+    for (id, rec) in records.iter() {
+        let insertion_ts = rec.get_insertion_timestamp();
+        match now.duration_since(insertion_ts) {
+            Ok(duration) => if duration.as_secs() > 10 {
+                ids_to_remove.push(id.clone());
+            },
+            Err(_) => (),
+        }
+    }
+    for id in ids_to_remove {
+        records.remove(&id);
+    }
+}
+
 fn main() {
     let matches = App::new("audit-snitch")
         .version("1.0")
@@ -153,12 +178,41 @@ fn main() {
         toml::from_slice(&config_bytes).expect(&format!("{} is not valid TOML!", config_path))
     };
 
+    let min_log_level = if config.debug_logging {
+        slog::Level::Debug
+    } else {
+        slog::Level::Info
+    };
+    let logger = if config.log_file == "journald" {
+        let drain = slog_journald::JournaldDrain.ignore_res();
+        let drain = LevelFilter::new(drain, min_log_level).fuse();
+        Logger::root(drain, o!("pid" => get_pid()))
+    } else {
+        let outfile = match OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .append(true)
+            .open(&config.log_file) {
+                Ok(f) => f,
+                Err(_) => panic!("Failed to open {}!", config.log_file),
+            };
+        let decorator = slog_term::PlainDecorator::new(outfile);
+        let drain = slog_term::FullFormat::new(decorator).build().fuse();
+        let drain = slog_async::Async::new(drain).build().fuse();
+        let drain = LevelFilter::new(drain, min_log_level).fuse();
+        Logger::root(drain, o!("pid" => get_pid()))
+    };
+
     if let Some(sc_matches) = matches.subcommand_matches("provision") {
         let machine_name = sc_matches.value_of("machine_name").unwrap();
         match provision(&config, machine_name) {
             Ok(_) => (),
-            Err(provision_err) => panic!(provision_err),
+            Err(provision_err) => {
+                crit!(logger, "{:?}", provision_err);
+                panic!(provision_err);
+            },
         };
+        info!(logger, "Got a certificate from the server");
         return;
     }
 
@@ -179,61 +233,80 @@ fn main() {
 
     let ssl_ctx = match ssl_madness::create_ssl_context_with_client_cert(&config.client_cert, &config.client_key) {
         Ok(ctx) => ctx,
-        Err(ssl_err) => panic!("{:?}", ssl_err),
+        Err(ssl_err) => {
+            crit!(logger, "{:?}", ssl_err);
+            panic!("{:?}", ssl_err);
+        },
     };
 
     let ssl_master = match ssl::Ssl::new(&ssl_ctx) {
         Ok(ssl_m) => ssl_m,
-        Err(ssl_err) => panic!("{:?}", ssl_err),
+        Err(ssl_err) => {
+            crit!(logger, "{:?}", ssl_err);
+            panic!("{:?}", ssl_err);
+        },
     };
 
     let sockaddr_spec = format!("{}:{}", config.sink_server.hostname, config.sink_server.port);
     let tcp_conn = match TcpStream::connect(&sockaddr_spec) {
         Ok(tcp_c) => tcp_c,
-        Err(tcp_err) => panic!("{:?}", tcp_err),
+        Err(tcp_err) => {
+            crit!(logger, "{:?}", tcp_err);
+            panic!("{:?}", tcp_err);
+        },
     };
 
     let mut ssl_conn = match ssl_master.connect(tcp_conn) {
         Ok(ssl_c) => ssl_c,
-        Err(ssl_err) => panic!("{:?}", ssl_err),
-    };
-
-    let mut outfile = match File::create(&config.log_file) {
-        Ok(f) => f,
-        Err(_) => panic!("Failed to open {}!", config.log_file),
+        Err(ssl_err) => {
+            crit!(logger, "{:?}", ssl_err);
+            panic!("{:?}", ssl_err);
+        },
     };
 
     let mut records: HashMap<i32, Box<audit::AuditRecord>> = HashMap::new();
 
+    let mut last_clean = UNIX_EPOCH;
     while should_run {
-        println!("Reading header from stdin...");
+        let now = SystemTime::now();
+        let time_since_clean = match now.duration_since(last_clean) {
+            Ok(duration) => duration.as_secs(),
+            // If negative time appears to have passed since the last
+            // clean, force a new clean.
+            Err(_) => 1000000,
+        };
+        if time_since_clean > 60 {
+            clean_records(&mut records);
+            last_clean = now;
+        }
+
         let hdr = match audit::read_header(&mut stdin) {
             Ok(hdr_struct) => hdr_struct,
             Err(ioerr) => {
-                println!("Failed to read header: {}", ioerr.description());
+                error!(logger, "Failed to read header: {}", ioerr.description());
                 break;
             },
         };
-        println!("Read header.");
         if hdr.ver != 0 {
+            crit!(logger, "Unsupported audit version: {}", hdr.ver);
             panic!("Unsupported audit version: {}", hdr.ver);
         }
         let msg = match audit::read_message(&mut stdin, hdr.size as usize) {
             Ok(msg_str) => msg_str,
-            Err(_) => panic!("Failed to read message!"),
+            Err(_) => {
+                // I'm not sure if we should log a failure or just die in this case.
+                error!(logger, "Failed to read message!");
+                continue;
+            },
         };
-        println!("Read a message!");
-        write!(outfile, "{}\n", msg).unwrap();
         let rec = match audit::parse_message(hdr.msg_type, &msg) {
             Err(errstr) => {
-                println!("Failed to parse message: {}", errstr);
+                error!(logger, "Failed to parse message: {}", errstr);
                 continue;
             },
             Ok(rec) => Box::new(rec),
         };
-        println!("Parsed the message!");
 
-        println!("Checking records...");
         let rec_id = rec.get_id();
         let contains_key = records.contains_key(&rec_id);
         if contains_key {
@@ -241,12 +314,10 @@ fn main() {
                 let other = records.get(&rec_id).unwrap();
                 match audit::dispatch_audit_event(&mut ssl_conn, &rec, &*other) {
                     Ok(_) => {
-                        write!(outfile, "Dispatched event {}\n", rec_id);
-                        println!("Dispatched event {}", rec_id);
+                        debug!(logger, "Dispatched event {}", rec_id);
                     },
                     Err(dispatch_error) => {
-                        write!(outfile, "Failed to dispatch event: {}\n", dispatch_error.description());
-                        println!("Failed to dispatch event: {}", dispatch_error.description());
+                        error!(logger, "Failed to dispatch event: {}", dispatch_error.description());
                     },
                 };
             }
@@ -257,10 +328,10 @@ fn main() {
     }
     match ssl_conn.shutdown() {
         Ok(ssl::ShutdownResult::Sent) => match ssl_conn.shutdown() {
-            Ok(ssl::ShutdownResult::Received) => println!("SSL connection shut down!"),
-            _ => println!("SSL connection only partially shut down.  Screw it!  We're done here!"),
+            Ok(ssl::ShutdownResult::Received) => debug!(logger, "SSL connection shut down."),
+            _ => error!(logger, "SSL connection only partially shut down.  Terminating anyway!"),
         },
-        Ok(ssl::ShutdownResult::Received) => println!("SSL connection shut down!"),
-        Err(shutdown_err) => println!("Failed to shut down SSL connection: {}", shutdown_err.description()),
+        Ok(ssl::ShutdownResult::Received) => debug!(logger, "SSL connection shut down."),
+        Err(shutdown_err) => error!(logger, "Failed to shut down SSL connection: {}", shutdown_err.description()),
     };
 }

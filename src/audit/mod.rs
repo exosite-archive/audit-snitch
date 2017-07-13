@@ -1,7 +1,7 @@
 use std::{io, mem, thread, time, i64, i32};
 
 use std::io::{Read, Write};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 use std::collections::HashMap;
 use std::error::Error;
 use std::slice;
@@ -46,7 +46,6 @@ pub fn read_header<T: Read>(f: &mut T) -> io::Result<audit_dispatcher_header> {
     loop  {
         let mut bytes = Vec::with_capacity(read_size);
         let mut chunk = f.take(read_size as u64);
-        io::stdout().flush();
         let bytes_read = match chunk.read_to_end(&mut bytes) {
             Ok(b) => b,
             Err(ioerr) => match ioerr.kind() {
@@ -60,9 +59,6 @@ pub fn read_header<T: Read>(f: &mut T) -> io::Result<audit_dispatcher_header> {
         if bytes_read < mem::size_of::<audit_dispatcher_header>() {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Input stream terminated"));
         }
-        //let hdr: audit_dispatcher_header = mem::transmute(bytes.as_slice());
-        //println!("{}", bytes.len());
-        //println!("{:?}", bytes);
         unsafe {
             let data_ptr: *const u8 = bytes.as_ptr();
             let hdr_ptr: *const audit_dispatcher_header = data_ptr as *const _;
@@ -103,7 +99,7 @@ pub struct SyscallRecord {
     id: i32,
     timestamp: i64,
     timestamp_frac: i64,
-    inserted_timestamp: u64,
+    inserted_timestamp: SystemTime,
     arch: SyscallArch,
     // This will probably always be 59
     syscall: i32,
@@ -127,11 +123,17 @@ pub struct SyscallRecord {
     subj: Option<String>,
 }
 
+// We don't use the timestamp from ExecveRecord right now,
+// since the timestamp from the corresponding SyscallRecord
+// should be either identical or indistinguishable.  We may
+// need it in the future, though (even if only for debugging),
+// so let's prevent warnings about it.
+#[allow(dead_code)]
 pub struct ExecveRecord {
     id: i32,
     timestamp: i64,
     timestamp_frac: i64,
-    inserted_timestamp: u64,
+    inserted_timestamp: SystemTime,
     args: Vec<String>,
 }
 
@@ -145,6 +147,13 @@ impl AuditRecord {
         match self {
             &AuditRecord::Syscall(ref rec) => rec.id,
             &AuditRecord::Execve(ref rec) => rec.id,
+        }
+    }
+
+    pub fn get_insertion_timestamp(&self) -> SystemTime {
+        match self {
+            &AuditRecord::Syscall(ref rec) => rec.inserted_timestamp,
+            &AuditRecord::Execve(ref rec) => rec.inserted_timestamp,
         }
     }
 }
@@ -193,12 +202,11 @@ fn parse_syscall_record(message: &str) -> Result<SyscallRecord, String> {
     };
     let kv = caps.name("kv").unwrap().as_str();
 
-    let ts_now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let mut rec = SyscallRecord{
         id: id,
         timestamp: timestamp,
         timestamp_frac: timestamp_frac,
-        inserted_timestamp: ts_now,
+        inserted_timestamp: SystemTime::now(),
         arch: SyscallArch::Unknown,
         syscall: -1,
         success: false,
@@ -301,12 +309,11 @@ fn parse_execve_record(message: &str) -> Result<ExecveRecord, String> {
     };
     let kv = caps.name("kv").unwrap().as_str();
 
-    let ts_now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let mut rec = ExecveRecord{
         id: id,
         timestamp: timestamp,
         timestamp_frac: timestamp_frac,
-        inserted_timestamp: ts_now,
+        inserted_timestamp: SystemTime::now(),
         args: Vec::new(),
     };
 
@@ -314,7 +321,6 @@ fn parse_execve_record(message: &str) -> Result<ExecveRecord, String> {
     for cap in RE_KV.captures_iter(kv) {
         let key = String::from(cap.name("key").unwrap().as_str());
         let value = String::from(extract_kv_value(&cap));
-        println!("Extracted {} from kv", value);
 
         kv_dict.insert(key, value);
     }
@@ -383,8 +389,6 @@ pub fn dispatch_audit_event<T: Write>(stream: &mut T, rec1: &AuditRecord, rec2: 
         },
     };
 
-    println!("Dispatching a message for event {}...", syscall.id);
-
     // We use the timestamp from the syscall record
     // because it and the execve record should be
     // extremely close together.  In fact, they will
@@ -442,58 +446,8 @@ pub fn dispatch_audit_event<T: Write>(stream: &mut T, rec1: &AuditRecord, rec2: 
     for arg in &execve.args {
         // Again with the cloning!  Curse you, protobuf!
         pr_args.push(arg.clone());
-        println!("Arg: {}", arg);
     }
     progrec.set_args(pr_args);
-
-    if !progrec.has_timestamp() {
-        println!("Missing timestamp!");
-    }
-    if !progrec.has_arch() {
-        println!("Missing arch!");
-    }
-    if !progrec.has_syscall() {
-        println!("Missing syscall!");
-    }
-    if !progrec.has_success() {
-        println!("Missing success!");
-    }
-    if !progrec.has_exit() {
-        println!("Missing exit!");
-    }
-    if !progrec.has_pid() {
-        println!("Missing pid!");
-    }
-    if !progrec.has_ppid() {
-        println!("Missing ppid!");
-    }
-    if !progrec.has_uid() {
-        println!("Missing uid!");
-    }
-    if !progrec.has_gid() {
-        println!("Missing gid!");
-    }
-    if !progrec.has_auid() {
-        println!("Missing auid!");
-    }
-    if !progrec.has_euid() {
-        println!("Missing euid!");
-    }
-    if !progrec.has_egid() {
-        println!("Missing egid!");
-    }
-    if !progrec.has_suid() {
-        println!("Missing suid!");
-    }
-    if !progrec.has_sgid() {
-        println!("Missing sgid!");
-    }
-    if !progrec.has_fsuid() {
-        println!("Missing fsuid!");
-    }
-    if !progrec.has_fsgid() {
-        println!("Missing fsgid!");
-    }
 
     let mut msg = SnitchReport::new();
     msg.set_message_type(REPORT_TYPE_PROGRAMRUN);
@@ -503,10 +457,8 @@ pub fn dispatch_audit_event<T: Write>(stream: &mut T, rec1: &AuditRecord, rec2: 
 
     let mut full_message = Vec::new();
     write_pb_and_flush(&mut CodedOutputStream::vec(&mut full_message), &msg)?;
-    println!("About to write...");
     stream.write_u32::<NetworkEndian>(full_message.len() as u32)?;
     stream.write_all(&full_message)?;
-    println!("Wrote everything!");
 
     return Ok(());
 }
