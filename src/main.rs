@@ -19,7 +19,7 @@ mod ssl_madness;
 mod audit;
 mod crypto;
 
-use std::{io, thread, fmt};
+use std::{io, thread, fmt, str};
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -28,12 +28,13 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 use std::convert::AsRef;
-use std::str;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::sync::mpsc::{sync_channel, Receiver};
 
 use chan_signal::Signal;
 use openssl::ssl;
 use openssl::error::ErrorStack;
+use openssl::ssl::HandshakeError;
 use clap::{Arg, App, SubCommand};
 use slog::{Logger, LevelFilter, Drain};
 
@@ -198,6 +199,198 @@ fn clean_records(records: &mut HashMap<i32, Box<audit::AuditRecord>>) {
     }
 }
 
+#[derive(Debug)]
+enum ConnectError {
+    OpenSSL(ErrorStack),
+    IO(io::Error),
+    Handshake(HandshakeError<TcpStream>),
+}
+
+impl Error for ConnectError {
+    fn description(&self) -> &str {
+        match self {
+            &ConnectError::OpenSSL(ref err) => err.description(),
+            &ConnectError::IO(ref err) => err.description(),
+            &ConnectError::Handshake(ref err) => err.description(),
+        }
+    }
+
+    fn cause(&self) -> Option<&Error> {
+        match self {
+            &ConnectError::OpenSSL(ref err) => Some(err),
+            &ConnectError::IO(ref err) => Some(err),
+            &ConnectError::Handshake(ref err) => Some(err),
+        }
+    }
+}
+
+impl fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.description())
+    }
+}
+
+impl std::convert::From<ErrorStack> for ConnectError {
+    fn from(err: ErrorStack) -> Self {
+        ConnectError::OpenSSL(err)
+    }
+}
+
+impl std::convert::From<io::Error> for ConnectError {
+    fn from(err: io::Error) -> Self {
+        ConnectError::IO(err)
+    }
+}
+
+impl std::convert::From<HandshakeError<TcpStream>> for ConnectError {
+    fn from(err: HandshakeError<TcpStream>) -> Self {
+        ConnectError::Handshake(err)
+    }
+}
+
+fn try_connect_ssl(client_cert_path: &str, client_key_path: &str, hostname: &str, port: u32) -> Result<ssl::SslStream<TcpStream>, ConnectError> {
+    let ssl_ctx = ssl_madness::create_ssl_context_with_client_cert(client_cert_path, client_key_path)?;
+    let ssl_connector = ssl::Ssl::new(&ssl_ctx)?;
+    let sockaddr_spec = format!("{}:{}", hostname, port);
+    let tcp_conn = TcpStream::connect(&sockaddr_spec)?;
+
+    match ssl_connector.connect(tcp_conn) {
+        Ok(ssl_c) => Ok(ssl_c),
+        Err(err) => Err(ConnectError::from(err)),
+    }
+}
+
+fn connect_ssl(logger: &Logger, client_cert_path: &str, client_key_path: &str, hostname: &str, port: u32) -> ssl::SslStream<TcpStream> {
+    loop {
+        match try_connect_ssl(client_cert_path, client_key_path, hostname, port) {
+            Ok(ssl_conn) => return ssl_conn,
+            Err(conn_err) => error!(logger, "Failed to connect to {}:{} because {}", hostname, port, conn_err.description()),
+        };
+    }
+}
+
+struct PendingTransfer {
+    pub syscall: audit::SyscallRecord,
+    pub execve: audit::ExecveRecord,
+}
+
+impl PendingTransfer {
+    fn from(rec1: audit::AuditRecord, rec2: audit::AuditRecord) -> io::Result<PendingTransfer> {
+        use audit::AuditRecord::*;
+        let (syscall, execve) = match rec1 {
+            Syscall(syscall) => (syscall, match rec2 {
+                Execve(execve) => execve,
+                Syscall(_) => return Err(io::Error::new(io::ErrorKind::Other, "No execve record found!")),
+            }),
+            Execve(execve) => (match rec2 {
+                Syscall(syscall) => syscall,
+                Execve(_) => return Err(io::Error::new(io::ErrorKind::Other, "No syscall record found!")),
+            }, execve),
+        };
+
+        return Ok(PendingTransfer{
+            syscall: syscall,
+            execve: execve,
+        });
+    }
+}
+
+struct SslReconnector {
+    logger: Logger,
+    client_cert_path: String,
+    client_key_path: String,
+    hostname: String,
+    port: u32,
+}
+
+impl SslReconnector {
+    fn from(logger: &Logger, client_cert_path: &str, client_key_path: &str, hostname: &str, port: u32) -> SslReconnector {
+        SslReconnector{
+            logger: logger.clone(),
+            client_cert_path: String::from(client_cert_path),
+            client_key_path: String::from(client_key_path),
+            hostname: String::from(hostname),
+            port: port,
+        }
+    }
+
+    fn connect(&self) -> ssl::SslStream<TcpStream> {
+        error!(self.logger, "Establishing new connection to {}:{}", self.hostname, self.port);
+        connect_ssl(&self.logger, &self.client_cert_path, &self.client_key_path, &self.hostname, self.port)
+    }
+}
+
+fn shutdown_ssl_connection(mut ssl_conn: ssl::SslStream<TcpStream>) -> Result<(), ssl::Error> {
+    match ssl_conn.shutdown() {
+        Ok(ssl::ShutdownResult::Sent) => match ssl_conn.shutdown() {
+            Ok(ssl::ShutdownResult::Received) => Ok(()),
+            Ok(ssl::ShutdownResult::Sent) => Ok(()), // Whatever.
+            Err(ssl_err) => Err(ssl_err),
+        },
+        Ok(ssl::ShutdownResult::Received) => Ok(()),
+        Err(ssl_err) => Err(ssl_err),
+    }
+}
+
+fn send_record(logger: &Logger, ssl_conn: ssl::SslStream<TcpStream>, ssl_reconnector: &SslReconnector, pending: &PendingTransfer) -> ssl::SslStream<TcpStream> {
+    let mut new_ssl_conn = ssl_conn;
+    let mut attempts = 0;
+    if pending.syscall.id != pending.execve.id {
+        error!(logger, "send_record received syscall record {} and execve record {} together!  Madness!", pending.syscall.id, pending.execve.id);
+        return new_ssl_conn;
+    }
+    let rec_id = pending.syscall.id;
+    loop {
+        if attempts > 2 {
+            error!(logger, "More than two attempts have been made.  Waiting one minute...");
+            thread::sleep(Duration::from_millis(1000 * 60));
+        } else if attempts > 5 {
+            error!(logger, "More than five attempts have been made.  Giving up!");
+            return new_ssl_conn;
+        }
+        match audit::dispatch_audit_event(&mut new_ssl_conn, &pending.syscall, &pending.execve) {
+            Ok(_) => {
+                debug!(logger, "Dispatched event {}", rec_id);
+                return new_ssl_conn;
+            },
+            Err(dispatch_error) => {
+                error!(logger, "Failed to dispatch event: {}", dispatch_error.description());
+                error!(logger, "Restarting connection...");
+                match shutdown_ssl_connection(new_ssl_conn) {
+                    Ok(_) => debug!(logger, "SSL connection shut down."),
+                    Err(ssl_err) => {
+                        error!(logger, "Failed to shut down SSL connection: {}", ssl_err.description());
+                        error!(logger, "Proceeding anyway...");
+                    },
+                };
+                new_ssl_conn = ssl_reconnector.connect();
+                error!(logger, "Connection re-established.  Trying to send event {} again...", rec_id);
+                attempts += 1;
+            },
+        };
+    }
+}
+
+fn record_sender(logger: Logger, ssl_reconnector: SslReconnector, recv: Receiver<PendingTransfer>) {
+    let mut ssl_conn = ssl_reconnector.connect();
+    loop {
+        match recv.recv() {
+            Ok(pending) => {
+                ssl_conn = send_record(&logger, ssl_conn, &ssl_reconnector, &pending);
+            },
+            // If the other end closes, we're done.
+            Err(_) => break,
+        }
+    }
+    match shutdown_ssl_connection(ssl_conn) {
+        Ok(_) => debug!(logger, "SSL connection shut down."),
+        Err(ssl_err) => {
+            error!(logger, "Failed to shut down SSL connection: {}", ssl_err.description());
+            error!(logger, "Proceeding anyway...");
+        },
+    };
+}
+
 fn main() {
     let matches = App::new("audit-snitch")
         .version("1.0")
@@ -277,41 +470,14 @@ fn main() {
         }
     });
 
-    let ssl_ctx = match ssl_madness::create_ssl_context_with_client_cert(&config.client_cert, &config.client_key) {
-        Ok(ctx) => ctx,
-        Err(ssl_err) => {
-            crit!(logger, "{:?}", ssl_err);
-            panic!("{:?}", ssl_err);
-        },
-    };
-
-    let ssl_master = match ssl::Ssl::new(&ssl_ctx) {
-        Ok(ssl_m) => ssl_m,
-        Err(ssl_err) => {
-            crit!(logger, "{:?}", ssl_err);
-            panic!("{:?}", ssl_err);
-        },
-    };
-
-    let sockaddr_spec = format!("{}:{}", config.sink_server.hostname, config.sink_server.port);
-    let tcp_conn = match TcpStream::connect(&sockaddr_spec) {
-        Ok(tcp_c) => tcp_c,
-        Err(tcp_err) => {
-            crit!(logger, "{:?}", tcp_err);
-            panic!("{:?}", tcp_err);
-        },
-    };
-
-    let mut ssl_conn = match ssl_master.connect(tcp_conn) {
-        Ok(ssl_c) => ssl_c,
-        Err(ssl_err) => {
-            crit!(logger, "{:?}", ssl_err);
-            panic!("{:?}", ssl_err);
-        },
-    };
+    let (sender, receiver) = sync_channel(100);
+    let record_sender_logger = logger.clone();
+    thread::spawn(move || {
+        let ssl_reconnector = SslReconnector::from(&record_sender_logger, &config.client_cert, &config.client_key, &config.sink_server.hostname, config.sink_server.port);
+        record_sender(record_sender_logger, ssl_reconnector, receiver);
+    });
 
     let mut records: HashMap<i32, Box<audit::AuditRecord>> = HashMap::new();
-
     let mut last_clean = UNIX_EPOCH;
     while should_run {
         let now = SystemTime::now();
@@ -360,27 +526,19 @@ fn main() {
         let contains_key = records.contains_key(&rec_id);
         if contains_key {
             {
-                let other = records.get(&rec_id).unwrap();
-                match audit::dispatch_audit_event(&mut ssl_conn, &rec, &*other) {
-                    Ok(_) => {
-                        debug!(logger, "Dispatched event {}", rec_id);
+                let other = records.remove(&rec_id).unwrap();
+                match PendingTransfer::from(*rec, *other) {
+                    Ok(pt) => match sender.send(pt) {
+                        Ok(_) => (),
+                        Err(wtf) => error!(logger, "Failed to send internally; this should never happen: {}", wtf),
                     },
-                    Err(dispatch_error) => {
-                        error!(logger, "Failed to dispatch event: {}", dispatch_error.description());
-                    },
+                    Err(wtf) => error!(logger, "Failed to construct PendingTransfer; this should never happen: {}", wtf),
                 };
             }
-            records.remove(&rec_id);
+            //records.remove(&rec_id);
         } else {
             records.insert(rec_id, rec);
         }
     }
-    match ssl_conn.shutdown() {
-        Ok(ssl::ShutdownResult::Sent) => match ssl_conn.shutdown() {
-            Ok(ssl::ShutdownResult::Received) => debug!(logger, "SSL connection shut down."),
-            _ => error!(logger, "SSL connection only partially shut down.  Terminating anyway!"),
-        },
-        Ok(ssl::ShutdownResult::Received) => debug!(logger, "SSL connection shut down."),
-        Err(shutdown_err) => error!(logger, "Failed to shut down SSL connection: {}", shutdown_err.description()),
-    };
+    drop(sender);
 }

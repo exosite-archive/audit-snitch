@@ -96,7 +96,7 @@ pub enum SyscallArch {
 }
 
 pub struct SyscallRecord {
-    id: i32,
+    pub id: i32,
     timestamp: i64,
     timestamp_frac: i64,
     inserted_timestamp: SystemTime,
@@ -130,7 +130,7 @@ pub struct SyscallRecord {
 // so let's prevent warnings about it.
 #[allow(dead_code)]
 pub struct ExecveRecord {
-    id: i32,
+    pub id: i32,
     timestamp: i64,
     timestamp_frac: i64,
     inserted_timestamp: SystemTime,
@@ -407,23 +407,9 @@ fn write_pb_and_flush<T: Message>(cos: &mut CodedOutputStream, msg: &T) -> io::R
     return Ok(());
 }
 
-pub fn dispatch_audit_event<T: Write>(stream: &mut T, rec1: &AuditRecord, rec2: &AuditRecord) -> io::Result<()> {
-    use self::AuditRecord::*;
+//pub fn dispatch_audit_event<T: Write>(stream: &mut T, rec1: &AuditRecord, rec2: &AuditRecord) -> io::Result<()> {
+pub fn dispatch_audit_event<T: Write>(stream: &mut T, syscall: &SyscallRecord, execve: &ExecveRecord) -> io::Result<()> {
     use self::SyscallArch::*;
-    let syscall = match rec1 {
-        &Syscall(ref syscall) => syscall,
-        &Execve(_) => match rec2 {
-            &Syscall(ref syscall) => syscall,
-            &Execve(_) => return Err(io::Error::new(io::ErrorKind::Other, "No syscall record found!")),
-        },
-    };
-    let execve = match rec1 {
-        &Execve(ref execve) => execve,
-        &Syscall(_) => match rec2 {
-            &Execve(ref execve) => execve,
-            &Syscall(_) => return Err(io::Error::new(io::ErrorKind::Other, "No execve record found!")),
-        },
-    };
 
     // We use the timestamp from the syscall record
     // because it and the execve record should be
