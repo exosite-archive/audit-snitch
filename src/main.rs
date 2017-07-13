@@ -300,9 +300,12 @@ fn main() {
             },
         };
         let rec = match audit::parse_message(hdr.msg_type, &msg) {
-            Err(errstr) => {
-                error!(logger, "Failed to parse message: {}", errstr);
-                continue;
+            Err(err) => match err {
+                audit::MessageParseError::UnknownType(_) => continue,
+                _ => {
+                    error!(logger, "Failed to parse message: {}", err.long_description());
+                    continue;
+                },
             },
             Ok(rec) => Box::new(rec),
         };

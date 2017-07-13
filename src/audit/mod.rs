@@ -1,4 +1,4 @@
-use std::{io, mem, thread, time, i64, i32};
+use std::{io, mem, thread, time, i64, i32, fmt};
 
 use std::io::{Read, Write};
 use std::time::SystemTime;
@@ -7,7 +7,7 @@ use std::error::Error;
 use std::slice;
 use std::str;
 
-use regex::{Regex, Captures};
+use regex::{Regex, Captures, CaptureMatches};
 use protobuf::{CodedOutputStream, Message};
 use byteorder::{NetworkEndian, WriteBytesExt};
 use self::protos::{AuditTimestamp, ProgramRun, SnitchReport};
@@ -172,40 +172,63 @@ fn extract_kv_value<'a>(cap: &'a Captures) -> &'a str {
     }
 }
 
-// audit(1498852023.639:741): arch=c000003e syscall=59 success=yes exit=0 a0=7fffdaa8cbd0 a1=7f7af2a41cf8 a2=1b9f030 a3=598 items=2 ppid=7113 pid=7114 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts3 ses=2 comm="git" exe="/usr/bin/git" key=(null)
-fn parse_syscall_record(message: &str) -> Result<SyscallRecord, String> {
+struct CommonParseResult<'a> {
+    pub timestamp: i64,
+    pub timestamp_frac: i64,
+    pub id: i32,
+    pub kv_iter: CaptureMatches<'a, 'a>,
+}
+
+macro_rules! must_get {
+    ( $caps:expr, $key: expr ) => (
+        $caps.name($key).unwrap().as_str()
+    )
+}
+
+fn parse_common<'a>(message: &'a str) -> Result<CommonParseResult<'a>, MessageParseError> {
     lazy_static!{
-        // These should be the same as below.
         static ref RE_TOP: Regex = Regex::new(r"audit\((?P<timestamp>\d+)\.(?P<timestamp_frac>\d+):(?P<id>\d+)\):(?P<kv>\s+.+)").unwrap();
         static ref RE_KV: Regex = Regex::new("\\s+(?P<key>[^=]+)=(?P<value>[^\"]\\S*|(\"(?P<inner>[^\"]+)\"))").unwrap();
     }
 
     let caps = match RE_TOP.captures(message) {
-        None => return Err(String::from("Failed to parse log line")),
+        None => return Err(MessageParseError::MalformedLine(String::from(message))),
         Some(c) => c,
     };
 
-    let timestamp_str = caps.name("timestamp").unwrap().as_str();
+    let timestamp_str = must_get!(caps, "timestamp");
     let timestamp = match i64::from_str_radix(timestamp_str, 10) {
         Ok(i) => i,
-        Err(_) => return Err(format!("Timestamp value {} is not a valid base-10 number", timestamp_str)),
+        Err(_) => return Err(MessageParseError::InvalidTimestamp(String::from(timestamp_str))),
     };
-    let timestamp_frac_str = caps.name("timestamp_frac").unwrap().as_str();
+    let timestamp_frac_str = must_get!(caps, "timestamp_frac");
     let timestamp_frac = match i64::from_str_radix(timestamp_frac_str, 10) {
         Ok(i) => i,
-        Err(_) => return Err(format!("Timestamp fraction value {} is not a valid base-10 number", timestamp_frac_str)),
+        Err(_) => return Err(MessageParseError::InvalidTimestampFraction(String::from(timestamp_frac_str))),
     };
-    let id_str = caps.name("id").unwrap().as_str();
+    let id_str = must_get!(caps, "id");
     let id = match i32::from_str_radix(id_str, 10) {
         Ok(i) => i,
-        Err(_) => return Err(format!("ID value {} is not a valid base-10 number", id_str)),
+        Err(_) => return Err(MessageParseError::InvalidId(String::from(id_str))),
     };
-    let kv = caps.name("kv").unwrap().as_str();
+    let kv = must_get!(caps, "kv");
 
-    let mut rec = SyscallRecord{
-        id: id,
+    return Ok(CommonParseResult{
         timestamp: timestamp,
         timestamp_frac: timestamp_frac,
+        id: id,
+        kv_iter: RE_KV.captures_iter(kv),
+    });
+}
+
+// audit(1498852023.639:741): arch=c000003e syscall=59 success=yes exit=0 a0=7fffdaa8cbd0 a1=7f7af2a41cf8 a2=1b9f030 a3=598 items=2 ppid=7113 pid=7114 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts3 ses=2 comm="git" exe="/usr/bin/git" key=(null)
+fn parse_syscall_record(message: &str) -> Result<SyscallRecord, MessageParseError> {
+    let common = parse_common(message)?;
+
+    let mut rec = SyscallRecord{
+        id: common.id,
+        timestamp: common.timestamp,
+        timestamp_frac: common.timestamp_frac,
         inserted_timestamp: SystemTime::now(),
         arch: SyscallArch::Unknown,
         syscall: -1,
@@ -229,13 +252,13 @@ fn parse_syscall_record(message: &str) -> Result<SyscallRecord, String> {
         subj: None,
     };
 
-    for cap in RE_KV.captures_iter(kv) {
-        let key = cap.name("key").unwrap().as_str();
+    for cap in common.kv_iter {
+        let key = must_get!(cap, "key");
         let value = extract_kv_value(&cap);
 
         // Sometimes, the value will be "(null)".  So far, I've only
         // seen this with the "key" value as in the example in the
-        //comment above this function.
+        // comment above this function.
         if value == "(null)" {
             continue;
         }
@@ -280,45 +303,19 @@ fn parse_syscall_record(message: &str) -> Result<SyscallRecord, String> {
 }
 
 // audit(1498852023.639:741): argc=3 a0="git" a1="rev-parse" a2="--git-dir"
-fn parse_execve_record(message: &str) -> Result<ExecveRecord, String> {
-    lazy_static!{
-        // These should be the same as above.
-        static ref RE_TOP: Regex = Regex::new(r"audit\((?P<timestamp>\d+)\.(?P<timestamp_frac>\d+):(?P<id>\d+)\):(?P<kv>\s+.+)").unwrap();
-        static ref RE_KV: Regex = Regex::new("\\s+(?P<key>[^=]+)=(?P<value>[^\"]\\S*|(\"(?P<inner>[^\"]+)\"))").unwrap();
-    }
-
-    let caps = match RE_TOP.captures(message) {
-        None => return Err(String::from("Failed to parse log line")),
-        Some(c) => c,
-    };
-
-    let timestamp_str = caps.name("timestamp").unwrap().as_str();
-    let timestamp = match i64::from_str_radix(timestamp_str, 10) {
-        Ok(i) => i,
-        Err(_) => return Err(format!("Timestamp value {} is not a valid base-10 number", timestamp_str)),
-    };
-    let timestamp_frac_str = caps.name("timestamp_frac").unwrap().as_str();
-    let timestamp_frac = match i64::from_str_radix(timestamp_frac_str, 10) {
-        Ok(i) => i,
-        Err(_) => return Err(format!("Timestamp fraction value {} is not a valid base-10 number", timestamp_frac_str)),
-    };
-    let id_str = caps.name("id").unwrap().as_str();
-    let id = match i32::from_str_radix(id_str, 10) {
-        Ok(i) => i,
-        Err(_) => return Err(format!("ID value {} is not a valid base-10 number", id_str)),
-    };
-    let kv = caps.name("kv").unwrap().as_str();
+fn parse_execve_record(message: &str) -> Result<ExecveRecord, MessageParseError> {
+    let common = parse_common(message)?;
 
     let mut rec = ExecveRecord{
-        id: id,
-        timestamp: timestamp,
-        timestamp_frac: timestamp_frac,
+        id: common.id,
+        timestamp: common.timestamp,
+        timestamp_frac: common.timestamp_frac,
         inserted_timestamp: SystemTime::now(),
         args: Vec::new(),
     };
 
     let mut kv_dict: HashMap<String, String> = HashMap::new();
-    for cap in RE_KV.captures_iter(kv) {
+    for cap in common.kv_iter {
         let key = String::from(cap.name("key").unwrap().as_str());
         let value = String::from(extract_kv_value(&cap));
 
@@ -326,10 +323,10 @@ fn parse_execve_record(message: &str) -> Result<ExecveRecord, String> {
     }
 
     let num_args = match kv_dict.get("argc") {
-        None => return Err(String::from("Log line did not contain argc!")),
+        None => return Err(MessageParseError::MalformedLine(String::from(message))),
         Some(c) => match i32::from_str_radix(c, 10) {
             Ok(i) => i,
-            Err(_) => return Err(format!("argc value {} is not a valid base-10 number", c)),
+            Err(_) => return Err(MessageParseError::InvalidArgc(c.clone())),
         },
     };
 
@@ -344,18 +341,57 @@ fn parse_execve_record(message: &str) -> Result<ExecveRecord, String> {
     return Ok(rec);
 }
 
-pub fn parse_message(message_type: u32, message: &str) -> Result<AuditRecord, String> {
+#[derive(Debug)]
+pub enum MessageParseError {
+    UnknownType(u32),
+    MalformedLine(String),
+    InvalidTimestamp(String),
+    InvalidTimestampFraction(String),
+    InvalidId(String),
+    InvalidArgc(String),
+}
+
+impl MessageParseError {
+    pub fn long_description(&self) -> String {
+        match self {
+            &MessageParseError::UnknownType(ref message_type) => format!("Unknown message type: {}", message_type),
+            &MessageParseError::MalformedLine(ref badstr) => format!("Failed to parse log line: {}", badstr),
+            &MessageParseError::InvalidTimestamp(ref badstr) => format!("Timestamp value {} is not a valid base-10 number", badstr),
+            &MessageParseError::InvalidTimestampFraction(ref badstr) => format!("Timestamp fraction value {} is not a valid base-10 number", badstr),
+            &MessageParseError::InvalidId(ref badstr) => format!("ID value {} is not a valid base-10 number", badstr),
+            &MessageParseError::InvalidArgc(ref badstr) => format!("argc value {} is not a valid base-10 number", badstr),
+        }
+    }
+}
+
+impl Error for MessageParseError {
+    fn description(&self) -> &str {
+        "Message parse error"
+    }
+
+    fn cause(&self) -> Option<&Error> {
+        None
+    }
+}
+
+impl fmt::Display for MessageParseError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.description())
+    }
+}
+
+pub fn parse_message(message_type: u32, message: &str) -> Result<AuditRecord, MessageParseError> {
     use self::AuditRecord::*;
     match message_type {
         AUDIT_SYSCALL => match parse_syscall_record(message) {
-            Err(errstr) => Err(errstr),
+            Err(err) => Err(MessageParseError::from(err)),
             Ok(syscall_record) => Ok(Syscall(syscall_record)),
         },
         AUDIT_EXECVE => match parse_execve_record(message) {
-            Err(errstr) => Err(errstr),
+            Err(err) => Err(MessageParseError::from(err)),
             Ok(execve_record) => Ok(Execve(execve_record)),
         },
-        _ => Err(format!("Unknown message type: {}", message_type)),
+        _ => Err(MessageParseError::UnknownType(message_type)),
     }
 }
 
