@@ -19,7 +19,7 @@ mod ssl_madness;
 mod audit;
 mod crypto;
 
-use std::{io, thread};
+use std::{io, thread, fmt};
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -33,6 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chan_signal::Signal;
 use openssl::ssl;
+use openssl::error::ErrorStack;
 use clap::{Arg, App, SubCommand};
 use slog::{Logger, LevelFilter, Drain};
 
@@ -64,31 +65,79 @@ fn write_data<P: AsRef<Path>>(file_path: P, data: &[u8]) -> io::Result<()> {
     return Ok(());
 }
 
-fn stringify_err<E: Error>(e: E) -> String {
-    String::from(e.description())
+#[derive(Debug)]
+enum ProvisionError {
+    OpenSSL(ErrorStack),
+    IO(io::Error),
+    Curl(curl::Error),
+    Hmac(crypto::HmacLoadError),
+    Server(String),
 }
 
-fn provision(config: &Config, id: &str) -> Result<(), String> {
+impl Error for ProvisionError {
+    fn description(&self) -> &str {
+        match self {
+            &ProvisionError::OpenSSL(ref err) => err.description(),
+            &ProvisionError::IO(ref err) => err.description(),
+            &ProvisionError::Curl(ref err) => err.description(),
+            &ProvisionError::Hmac(ref err) => err.description(),
+            &ProvisionError::Server(ref errstr) => &errstr,
+        }
+    }
+
+    fn cause(&self) -> Option<&Error> {
+        match self {
+            &ProvisionError::OpenSSL(ref err) => Some(err),
+            &ProvisionError::IO(ref err) => Some(err),
+            &ProvisionError::Curl(ref err) => Some(err),
+            &ProvisionError::Hmac(ref err) => Some(err),
+            &ProvisionError::Server(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for ProvisionError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.description())
+    }
+}
+
+impl std::convert::From<ErrorStack> for ProvisionError {
+    fn from(err: ErrorStack) -> Self {
+        ProvisionError::OpenSSL(err)
+    }
+}
+
+impl std::convert::From<io::Error> for ProvisionError {
+    fn from(err: io::Error) -> Self {
+        ProvisionError::IO(err)
+    }
+}
+
+impl std::convert::From<curl::Error> for ProvisionError {
+    fn from(err: curl::Error) -> Self {
+        ProvisionError::Curl(err)
+    }
+}
+
+impl std::convert::From<crypto::HmacLoadError> for ProvisionError {
+    fn from(err: crypto::HmacLoadError) -> Self {
+        ProvisionError::Hmac(err)
+    }
+}
+
+fn provision(config: &Config, id: &str) -> Result<(), ProvisionError> {
     use curl::easy::{Easy, List};
     use crypto::{KeyType, ECurve};
 
     let hmac_key = crypto::load_hmac_key(&config.api_key)?;
 
     let client_key = crypto::generate_client_key(KeyType::Ecdsa(ECurve::Prime256v1))?;
-    let key_pem_bytes = match client_key.private_key_to_pem() {
-        Ok(pem_vec) => pem_vec,
-        Err(openssl_err) => return Err(String::from(openssl_err.description())),
-    };
-    match write_data(&config.client_key, &key_pem_bytes) {
-        Ok(_) => (),
-        Err(write_err) => return Err(String::from(write_err.description())),
-    };
+    let key_pem_bytes = client_key.private_key_to_pem()?;
+    write_data(&config.client_key, &key_pem_bytes)?;
 
     let csr = crypto::create_csr(&client_key, &client_key, id)?;
-    let csr_pem_bytes = match csr.to_pem() {
-        Ok(pem_vec) => pem_vec,
-        Err(csr_err) => return Err(String::from(csr_err.description())),
-    };
+    let csr_pem_bytes = csr.to_pem()?;
     let csr_sig = crypto::sign_data(&hmac_key, &csr_pem_bytes)?;
 
     let mut response_bytes = Vec::new();
@@ -98,13 +147,13 @@ fn provision(config: &Config, id: &str) -> Result<(), String> {
         let mut easy = Easy::new();
         let url = format!("https://{}:{}/v1/provision", config.api_server.hostname, config.api_server.port);
         let csr_sig_header = format!("CSR-Signature: {}", base64::encode(&csr_sig));
-        easy.url(&url).map_err(stringify_err)?;
-        easy.cainfo(&config.ca_cert).map_err(stringify_err)?;
+        easy.url(&url)?;
+        easy.cainfo(&config.ca_cert)?;
         easy.put(true).unwrap();
         let mut headers = List::new();
         headers.append("Content-Type: application/octet-stream").unwrap();
         headers.append(&csr_sig_header).unwrap();
-        easy.http_headers(headers).map_err(stringify_err)?;
+        easy.http_headers(headers)?;
         {
             let mut transfer = easy.transfer();
             transfer.write_function(|data| {
@@ -114,24 +163,21 @@ fn provision(config: &Config, id: &str) -> Result<(), String> {
             transfer.read_function(|into| {
                 Ok(csr_cursor.read(into).unwrap())
             }).unwrap();
-            transfer.perform().map_err(stringify_err)?;
+            transfer.perform()?;
         }
-        easy.response_code().map_err(stringify_err)?
+        easy.response_code()?
     };
 
     return if response_status == 200 {
-        let mut f = match File::create(&config.client_cert) {
-            Ok(f) => f,
-            Err(create_err) => return Err(String::from(create_err.description())),
-        };
-        f.write_all(&response_bytes).map_err(stringify_err)?;
+        let mut f = File::create(&config.client_cert)?;
+        f.write_all(&response_bytes)?;
         Ok(())
     } else {
         let body_text = match String::from_utf8(response_bytes) {
             Ok(s) => s,
             Err(_) => String::from("UTF8ERROR"),
         };
-        Err(format!("Failed to provision: {} => {}", response_status, body_text))
+        Err(ProvisionError::Server(format!("Failed to provision: {} => {}", response_status, body_text)))
     };
 }
 
