@@ -5,6 +5,9 @@ authors = ["Alexander Wauck <alex@impulse101.org>"]
 build = "build.rs"
 license = "GPL-3.0"
 
+[features]
+journald = ["slog-journald"]
+
 [dependencies]
 regex = "0.2"
 libc = "0.2.0"
@@ -14,7 +17,7 @@ lazy_static = "0.2"
 byteorder = "1.0"
 slog = "2"
 slog-term = "2"
-slog-journald = "2"
+slog-journald = { version = "2", optional = true }
 slog-async = "2"
 toml = "0.4"
 serde = "1.0"

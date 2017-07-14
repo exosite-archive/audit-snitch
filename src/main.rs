@@ -7,7 +7,7 @@ extern crate openssl;
 extern crate byteorder;
 #[macro_use] extern crate slog;
 extern crate slog_term;
-extern crate slog_journald;
+#[cfg(journald)] extern crate slog_journald;
 extern crate slog_async;
 extern crate toml;
 #[macro_use] extern crate serde_derive;
@@ -391,6 +391,19 @@ fn record_sender(logger: Logger, ssl_reconnector: SslReconnector, recv: Receiver
     };
 }
 
+#[cfg(journald)]
+fn make_journald_logger(min_log_level: slog::Level) -> Logger {
+    let drain = slog_journald::JournaldDrain.ignore_res();
+    let drain = LevelFilter::new(drain, min_log_level).fuse();
+    Logger::root(drain, o!("pid" => get_pid()))
+}
+
+#[allow(unused_variables)]
+#[cfg(not(journald))]
+fn make_journald_logger(min_log_level: slog::Level) -> Logger {
+    panic!("journald is not supported by this build!")
+}
+
 fn main() {
     let matches = App::new("audit-snitch")
         .version("1.0")
@@ -423,9 +436,7 @@ fn main() {
         slog::Level::Info
     };
     let logger = if config.log_file == "journald" {
-        let drain = slog_journald::JournaldDrain.ignore_res();
-        let drain = LevelFilter::new(drain, min_log_level).fuse();
-        Logger::root(drain, o!("pid" => get_pid()))
+        make_journald_logger(min_log_level)
     } else {
         let outfile = match OpenOptions::new()
             .create(true)
