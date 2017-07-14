@@ -472,7 +472,7 @@ fn main() {
 
     let (sender, receiver) = sync_channel(100);
     let record_sender_logger = logger.clone();
-    thread::spawn(move || {
+    let sender_thread = thread::spawn(move || {
         let ssl_reconnector = SslReconnector::from(&record_sender_logger, &config.client_cert, &config.client_key, &config.sink_server.hostname, config.sink_server.port);
         record_sender(record_sender_logger, ssl_reconnector, receiver);
     });
@@ -535,10 +535,13 @@ fn main() {
                     Err(wtf) => error!(logger, "Failed to construct PendingTransfer; this should never happen: {}", wtf),
                 };
             }
-            //records.remove(&rec_id);
         } else {
             records.insert(rec_id, rec);
         }
     }
     drop(sender);
+    match sender_thread.join() {
+        Ok(_) => (),
+        Err(err) => error!(logger, "Sender thread crashed: {:?}", err),
+    };
 }
