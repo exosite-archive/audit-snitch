@@ -1,2 +1,7 @@
 target
 *~
+docker-build/*/Dockerfile
+docker-build/*/build.sh
+docker-build/*/rustup-init.sh
+docker-build/*/update.sh
+docker-build/*/install.sh
