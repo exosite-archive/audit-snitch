@@ -7,7 +7,7 @@ extern crate openssl;
 extern crate byteorder;
 #[macro_use] extern crate slog;
 extern crate slog_term;
-#[cfg(journald)] extern crate slog_journald;
+#[cfg(feature = "journald")] extern crate slog_journald;
 extern crate slog_async;
 extern crate toml;
 #[macro_use] extern crate serde_derive;
@@ -393,7 +393,7 @@ fn record_sender(logger: Logger, ssl_reconnector: SslReconnector, recv: Receiver
     };
 }
 
-#[cfg(journald)]
+#[cfg(feature = "journald")]
 fn make_journald_logger(min_log_level: slog::Level) -> Logger {
     let drain = slog_journald::JournaldDrain.ignore_res();
     let drain = LevelFilter::new(drain, min_log_level).fuse();
@@ -401,7 +401,7 @@ fn make_journald_logger(min_log_level: slog::Level) -> Logger {
 }
 
 #[allow(unused_variables)]
-#[cfg(not(journald))]
+#[cfg(not(feature = "journald"))]
 fn make_journald_logger(min_log_level: slog::Level) -> Logger {
     panic!("journald is not supported by this build!")
 }
