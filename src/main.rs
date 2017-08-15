@@ -31,6 +31,8 @@ use std::convert::AsRef;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use std::sync::mpsc::{sync_channel, Receiver};
 
+use audit::Parser;
+
 use chan_signal::Signal;
 use openssl::ssl;
 use openssl::error::ErrorStack;
@@ -468,6 +470,7 @@ fn main() {
 
     let mut stdin = io::stdin();
     let mut should_run = true;
+    let mut parser = audit::BinParser::new(&mut stdin);
 
     thread::spawn(move || {
         let signal = chan_signal::notify(&[Signal::TERM]);
@@ -503,27 +506,12 @@ fn main() {
             last_clean = now;
         }
 
-        let hdr = match audit::read_header(&mut stdin) {
-            Ok(hdr_struct) => hdr_struct,
-            Err(ioerr) => {
-                error!(logger, "Failed to read header: {}", ioerr.description());
-                break;
-            },
-        };
-        if hdr.ver != 0 {
-            crit!(logger, "Unsupported audit version: {}", hdr.ver);
-            panic!("Unsupported audit version: {}", hdr.ver);
-        }
-        let msg = match audit::read_message(&mut stdin, hdr.size as usize) {
-            Ok(msg_str) => msg_str,
-            Err(_) => {
-                // I'm not sure if we should log a failure or just die in this case.
-                error!(logger, "Failed to read message!");
-                continue;
-            },
-        };
-        let rec = match audit::parse_message(hdr.msg_type, &msg) {
+        let rec = match parser.read_event() {
             Err(err) => match err {
+                audit::MessageParseError::InvalidVersion(_) => {
+                    crit!(logger, "{}", err.description());
+                    panic!("{}", err.description());
+                },
                 audit::MessageParseError::UnknownType(_) => continue,
                 _ => {
                     error!(logger, "Failed to parse message: {}", err.long_description());
