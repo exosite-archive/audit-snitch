@@ -10,8 +10,18 @@ use self::protos::{AuditTimestamp, ProgramRun, SnitchReport};
 
 mod protos;
 mod aubin;
+mod auparse;
 
 pub use self::aubin::BinParser;
+pub use self::auparse::AuParser;
+
+// From linux/audit.h
+const AUDIT_SYSCALL: u32 = 1300;
+const AUDIT_EXECVE: u32 = 1309;
+#[allow(dead_code)]
+const AUDIT_ARCH_64BIT: u32 = 0x80000000;
+#[allow(dead_code)]
+const AUDIT_ARCH_LE: u32 = 0x40000000;
 
 // From audit.proto
 #[allow(dead_code)]
@@ -25,7 +35,7 @@ pub enum SyscallArch {
 }
 
 pub struct SyscallRecord {
-    pub id: i32,
+    pub id: u64,
     timestamp: i64,
     timestamp_frac: i64,
     inserted_timestamp: SystemTime,
@@ -59,7 +69,7 @@ pub struct SyscallRecord {
 // so let's prevent warnings about it.
 #[allow(dead_code)]
 pub struct ExecveRecord {
-    pub id: i32,
+    pub id: u64,
     timestamp: i64,
     timestamp_frac: i64,
     inserted_timestamp: SystemTime,
@@ -72,7 +82,7 @@ pub enum AuditRecord {
 }
 
 impl AuditRecord {
-    pub fn get_id(&self) -> i32 {
+    pub fn get_id(&self) -> u64 {
         match self {
             &AuditRecord::Syscall(ref rec) => rec.id,
             &AuditRecord::Execve(ref rec) => rec.id,
@@ -98,6 +108,7 @@ pub enum MessageParseError {
     InvalidArgc(String),
     InvalidVersion(u32),
     IoError(io::Error),
+    Eof,
 }
 
 impl MessageParseError {
@@ -111,6 +122,7 @@ impl MessageParseError {
             &MessageParseError::InvalidArgc(ref badstr) => format!("argc value {} is not a valid base-10 number", badstr),
             &MessageParseError::InvalidVersion(ref badver) => format!("Unsupported audit version: {}", badver),
             &MessageParseError::IoError(ref ioerr) => ioerr.description().to_owned(),
+            &MessageParseError::Eof => String::from("EOF"),
         }
     }
 }
@@ -229,4 +241,59 @@ pub fn dispatch_audit_event<T: Write>(stream: &mut T, syscall: &SyscallRecord, e
 
 pub trait Parser {
     fn read_event(&mut self) -> Result<AuditRecord, MessageParseError>;
+}
+
+fn parse_i32_default(txt: &str, def: i32) -> i32 {
+    match i32::from_str_radix(txt, 10) {
+        Ok(i) => i,
+        Err(_) => def,
+    }
+}
+
+// From linux/elf-em.h
+const EM_386: u32 = 3;
+const EM_X86_64: u32 = 62;
+
+fn syscall_extract_fields(rec: &mut SyscallRecord, key: &str, value: &str) {
+        // Sometimes, the value will be "(null)".  So far, I've only
+        // seen this with the "key" value as in the example in the
+        // comment above this function.
+        if value == "(null)" {
+            return;
+        }
+
+        match key {
+            "arch" => {
+                rec.arch = match u32::from_str_radix(value, 16) {
+                    Ok(arch) => if arch & EM_386 != 0 {
+                        SyscallArch::I386
+                    } else if arch & EM_X86_64 != 0 {
+                        SyscallArch::Amd64
+                    } else {
+                        SyscallArch::Unknown
+                    },
+                    Err(_) => SyscallArch::Unknown,
+                };
+            },
+            "syscall" => { rec.syscall = parse_i32_default(value, -1); },
+            "success" => { rec.success = value == "yes"; },
+            "exit" => { rec.exit = parse_i32_default(value, -1); },
+            "pid" => { rec.pid = parse_i32_default(value, -1); },
+            "ppid" => { rec.ppid = parse_i32_default(value, -1); },
+            "uid" => { rec.uid = parse_i32_default(value, -1); },
+            "gid" => { rec.gid = parse_i32_default(value, -1); },
+            "auid" => { rec.auid = parse_i32_default(value, -1); },
+            "euid" => { rec.euid = parse_i32_default(value, -1); },
+            "egid" => { rec.egid = parse_i32_default(value, -1); },
+            "suid" => { rec.suid = parse_i32_default(value, -1); },
+            "sgid" => { rec.sgid = parse_i32_default(value, -1); },
+            "fsuid" => { rec.fsuid = parse_i32_default(value, -1); },
+            "fsgid" => { rec.fsgid = parse_i32_default(value, -1); },
+            "tty" => { rec.tty = Some(String::from(value)); },
+            "comm" => { rec.comm = Some(String::from(value)); },
+            "exe" => { rec.exe = Some(String::from(value)); },
+            "key" => { rec.key = Some(String::from(value)); },
+            "subj" => { rec.subj = Some(String::from(value)); },
+            _ => (),
+        }
 }

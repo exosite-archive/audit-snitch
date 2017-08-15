@@ -1,0 +1,15 @@
+api_key = "BASE64_GOES_HERE"
+client_cert = "./client.crt"
+client_key = "./client.key"
+ca_cert = "./ca.crt"
+log_file = "./snitch.log"
+debug_logging = false
+input_type = "string"
+
+[api_server]
+hostname = "example.com"
+port = 9443
+
+[sink_server]
+hostname = "example.com"
+port = 8443

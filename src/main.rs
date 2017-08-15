@@ -31,8 +31,6 @@ use std::convert::AsRef;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use std::sync::mpsc::{sync_channel, Receiver};
 
-use audit::Parser;
-
 use chan_signal::Signal;
 use openssl::ssl;
 use openssl::error::ErrorStack;
@@ -56,6 +54,7 @@ struct Config {
     ca_cert: String,
     log_file: String,
     debug_logging: bool,
+    input_type: String,
 }
 
 fn get_pid() -> i32 {
@@ -184,7 +183,7 @@ fn provision(config: &Config, id: &str) -> Result<(), ProvisionError> {
     };
 }
 
-fn clean_records(records: &mut HashMap<i32, Box<audit::AuditRecord>>) {
+fn clean_records(records: &mut HashMap<u64, Box<audit::AuditRecord>>) {
     let now = SystemTime::now();
     let mut ids_to_remove = Vec::new();
     for (id, rec) in records.iter() {
@@ -406,6 +405,14 @@ fn make_journald_logger(min_log_level: slog::Level) -> Logger {
     panic!("journald is not supported by this build!")
 }
 
+fn make_parser(config: &Config) -> Box<audit::Parser> {
+    match config.input_type.as_ref() {
+        "binary" => Box::new(audit::BinParser::new(io::stdin())),
+        "string" => Box::new(audit::AuParser::new_stdin()),
+        _ => panic!("Invalid input type: {}", config.input_type),
+    }
+}
+
 fn main() {
     let matches = App::new("audit-snitch")
         .version("1.0")
@@ -468,9 +475,8 @@ fn main() {
         return;
     }
 
-    let mut stdin = io::stdin();
     let mut should_run = true;
-    let mut parser = audit::BinParser::new(&mut stdin);
+    let mut parser = make_parser(&config);
 
     thread::spawn(move || {
         let signal = chan_signal::notify(&[Signal::TERM]);
@@ -491,7 +497,7 @@ fn main() {
         record_sender(record_sender_logger, ssl_reconnector, receiver);
     });
 
-    let mut records: HashMap<i32, Box<audit::AuditRecord>> = HashMap::new();
+    let mut records: HashMap<u64, Box<audit::AuditRecord>> = HashMap::new();
     let mut last_clean = UNIX_EPOCH;
     while should_run {
         let now = SystemTime::now();
@@ -512,6 +518,7 @@ fn main() {
                     crit!(logger, "{}", err.description());
                     panic!("{}", err.description());
                 },
+                audit::MessageParseError::Eof => break,
                 audit::MessageParseError::UnknownType(_) => continue,
                 _ => {
                     error!(logger, "Failed to parse message: {}", err.long_description());

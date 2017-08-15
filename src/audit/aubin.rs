@@ -8,6 +8,7 @@ use std::slice;
 use std::str;
 
 use super::{MessageParseError, AuditRecord, SyscallRecord, SyscallArch, ExecveRecord};
+use super::{AUDIT_SYSCALL, AUDIT_EXECVE};
 
 use regex::{Regex, Captures, CaptureMatches};
 
@@ -20,18 +21,6 @@ pub struct audit_dispatcher_header {
     pub msg_type: libc::uint32_t,
     pub size: libc::uint32_t,
 }
-
-// From linux/audit.h
-pub const AUDIT_SYSCALL: u32 = 1300;
-pub const AUDIT_EXECVE: u32 = 1309;
-#[allow(dead_code)]
-pub const AUDIT_ARCH_64BIT: u32 = 0x80000000;
-#[allow(dead_code)]
-pub const AUDIT_ARCH_LE: u32 = 0x40000000;
-
-// From linux/elf-em.h
-pub const EM_386: u32 = 3;
-pub const EM_X86_64: u32 = 62;
 
 pub fn read_header<T: Read>(f: &mut T) -> io::Result<audit_dispatcher_header> {
     let read_size = mem::size_of::<audit_dispatcher_header>();
@@ -81,24 +70,10 @@ pub fn read_message<T: Read>(f: &mut T, expected_size: usize) -> io::Result<Stri
     };
 }
 
-fn parse_i32_default(txt: &str, def: i32) -> i32 {
-    match i32::from_str_radix(txt, 10) {
-        Ok(i) => i,
-        Err(_) => def,
-    }
-}
-
-fn extract_kv_value<'a>(cap: &'a Captures) -> &'a str {
-    match cap.name("inner") {
-        None => cap.name("value").unwrap().as_str(),
-        Some(val) => val.as_str(),
-    }
-}
-
 struct CommonParseResult<'a> {
     pub timestamp: i64,
     pub timestamp_frac: i64,
-    pub id: i32,
+    pub id: u64,
     pub kv_iter: CaptureMatches<'a, 'a>,
 }
 
@@ -130,7 +105,7 @@ fn parse_common<'a>(message: &'a str) -> Result<CommonParseResult<'a>, MessagePa
         Err(_) => return Err(MessageParseError::InvalidTimestampFraction(String::from(timestamp_frac_str))),
     };
     let id_str = must_get!(caps, "id");
-    let id = match i32::from_str_radix(id_str, 10) {
+    let id = match u64::from_str_radix(id_str, 10) {
         Ok(i) => i,
         Err(_) => return Err(MessageParseError::InvalidId(String::from(id_str))),
     };
@@ -142,6 +117,13 @@ fn parse_common<'a>(message: &'a str) -> Result<CommonParseResult<'a>, MessagePa
         id: id,
         kv_iter: RE_KV.captures_iter(kv),
     });
+}
+
+fn extract_kv_value<'a>(cap: &'a Captures) -> &'a str {
+    match cap.name("inner") {
+        None => cap.name("value").unwrap().as_str(),
+        Some(val) => val.as_str(),
+    }
 }
 
 // audit(1498852023.639:741): arch=c000003e syscall=59 success=yes exit=0 a0=7fffdaa8cbd0 a1=7f7af2a41cf8 a2=1b9f030 a3=598 items=2 ppid=7113 pid=7114 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts3 ses=2 comm="git" exe="/usr/bin/git" key=(null)
@@ -179,47 +161,7 @@ fn parse_syscall_record(message: &str) -> Result<SyscallRecord, MessageParseErro
         let key = must_get!(cap, "key");
         let value = extract_kv_value(&cap);
 
-        // Sometimes, the value will be "(null)".  So far, I've only
-        // seen this with the "key" value as in the example in the
-        // comment above this function.
-        if value == "(null)" {
-            continue;
-        }
-
-        match key {
-            "arch" => {
-                rec.arch = match u32::from_str_radix(value, 16) {
-                    Ok(arch) => if arch & EM_386 != 0 {
-                        SyscallArch::I386
-                    } else if arch & EM_X86_64 != 0 {
-                        SyscallArch::Amd64
-                    } else {
-                        SyscallArch::Unknown
-                    },
-                    Err(_) => SyscallArch::Unknown,
-                };
-            },
-            "syscall" => { rec.syscall = parse_i32_default(value, -1); },
-            "success" => { rec.success = value == "yes"; },
-            "exit" => { rec.exit = parse_i32_default(value, -1); },
-            "pid" => { rec.pid = parse_i32_default(value, -1); },
-            "ppid" => { rec.ppid = parse_i32_default(value, -1); },
-            "uid" => { rec.uid = parse_i32_default(value, -1); },
-            "gid" => { rec.gid = parse_i32_default(value, -1); },
-            "auid" => { rec.auid = parse_i32_default(value, -1); },
-            "euid" => { rec.euid = parse_i32_default(value, -1); },
-            "egid" => { rec.egid = parse_i32_default(value, -1); },
-            "suid" => { rec.suid = parse_i32_default(value, -1); },
-            "sgid" => { rec.sgid = parse_i32_default(value, -1); },
-            "fsuid" => { rec.fsuid = parse_i32_default(value, -1); },
-            "fsgid" => { rec.fsgid = parse_i32_default(value, -1); },
-            "tty" => { rec.tty = Some(String::from(value)); },
-            "comm" => { rec.comm = Some(String::from(value)); },
-            "exe" => { rec.exe = Some(String::from(value)); },
-            "key" => { rec.key = Some(String::from(value)); },
-            "subj" => { rec.subj = Some(String::from(value)); },
-            _ => (),
-        }
+        super::syscall_extract_fields(&mut rec, key, value);
     }
 
     return Ok(rec);
@@ -279,21 +221,21 @@ pub fn parse_message(message_type: u32, message: &str) -> Result<super::AuditRec
     }
 }
 
-pub struct BinParser<'a, T: Read>  where T: 'a {
-    f: &'a mut T,
+pub struct BinParser<T: Read> {
+    f: T,
 }
 
-impl<'a, T: Read> BinParser<'a, T> {
-    pub fn new(f: &'a mut T) -> BinParser<T> {
+impl<T: Read> BinParser<T> {
+    pub fn new(f: T) -> BinParser<T> {
         BinParser{
             f: f,
         }
     }
 }
 
-impl<'a, T: Read> super::Parser for BinParser<'a, T> {
+impl<T: Read> super::Parser for BinParser<T> {
     fn read_event(&mut self) -> Result<AuditRecord, MessageParseError> {
-        let hdr = match read_header(self.f) {
+        let hdr = match read_header(&mut self.f) {
             Ok(hdr_struct) => hdr_struct,
             Err(ioerr) => {
                 return Err(MessageParseError::IoError(ioerr));
@@ -302,7 +244,7 @@ impl<'a, T: Read> super::Parser for BinParser<'a, T> {
         if hdr.ver != 0 {
             return Err(MessageParseError::InvalidVersion(hdr.ver));
         }
-        let msg = match read_message(self.f, hdr.size as usize) {
+        let msg = match read_message(&mut self.f, hdr.size as usize) {
             Ok(msg_str) => msg_str,
             Err(ioerr) => {
                 return Err(MessageParseError::IoError(ioerr));
