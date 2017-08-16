@@ -1,4 +1,4 @@
-target
+target*
 *~
 docker-build/*/Dockerfile
 docker-build/*/build.sh
