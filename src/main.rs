@@ -267,6 +267,7 @@ fn connect_ssl(logger: &Logger, client_cert_path: &str, client_key_path: &str, h
             Ok(ssl_conn) => return ssl_conn,
             Err(conn_err) => error!(logger, "Failed to connect to {}:{} because {}", hostname, port, conn_err.description()),
         };
+        thread::sleep(Duration::from_secs(60));
     }
 }
 
