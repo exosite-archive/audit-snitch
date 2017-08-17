@@ -31,7 +31,7 @@ pub fn read_header<T: Read>(f: &mut T) -> io::Result<audit_dispatcher_header> {
             Ok(b) => b,
             Err(ioerr) => match ioerr.kind() {
                 io::ErrorKind::WouldBlock => {
-                    thread::sleep(time::Duration::from_millis(1000));
+                    thread::sleep(time::Duration::from_secs(1));
                     continue;
                 },
                 _ => 0,

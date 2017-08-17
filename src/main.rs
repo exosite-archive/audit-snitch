@@ -344,7 +344,7 @@ fn send_record(logger: &Logger, ssl_conn: ssl::SslStream<TcpStream>, ssl_reconne
     loop {
         if attempts > 2 {
             error!(logger, "More than two attempts have been made.  Waiting one minute...");
-            thread::sleep(Duration::from_millis(1000 * 60));
+            thread::sleep(Duration::from_secs(60));
         } else if attempts > 5 {
             error!(logger, "More than five attempts have been made.  Giving up!");
             return new_ssl_conn;
