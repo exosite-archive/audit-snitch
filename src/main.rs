@@ -29,7 +29,7 @@ use std::error::Error;
 use std::path::Path;
 use std::convert::AsRef;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
-use std::sync::mpsc::{sync_channel, Receiver};
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError};
 
 use chan_signal::Signal;
 use openssl::ssl;
@@ -357,15 +357,46 @@ fn send_record(logger: &Logger, ssl_conn: ssl::SslStream<TcpStream>, ssl_reconne
             Err(dispatch_error) => {
                 error!(logger, "Failed to dispatch event: {}", dispatch_error.description());
                 error!(logger, "Restarting connection...");
-                match shutdown_ssl_connection(new_ssl_conn) {
-                    Ok(_) => debug!(logger, "SSL connection shut down."),
-                    Err(ssl_err) => {
-                        error!(logger, "Failed to shut down SSL connection: {}", ssl_err.description());
-                        error!(logger, "Proceeding anyway...");
-                    },
-                };
-                new_ssl_conn = ssl_reconnector.connect();
+                new_ssl_conn = restart_connection(logger, new_ssl_conn, ssl_reconnector);
                 error!(logger, "Connection re-established.  Trying to send event {} again...", rec_id);
+                attempts += 1;
+            },
+        };
+    }
+}
+
+fn restart_connection(logger: &Logger, ssl_conn: ssl::SslStream<TcpStream>, ssl_reconnector: &SslReconnector) -> ssl::SslStream<TcpStream> {
+    match shutdown_ssl_connection(ssl_conn) {
+        Ok(_) => debug!(logger, "SSL connection shut down."),
+        Err(ssl_err) => {
+            error!(logger, "Failed to shut down SSL connection: {}", ssl_err.description());
+            error!(logger, "Proceeding anyway...");
+        },
+    };
+    return ssl_reconnector.connect();
+}
+
+fn send_keepalive(logger: &Logger, ssl_conn: ssl::SslStream<TcpStream>, ssl_reconnector: &SslReconnector) -> ssl::SslStream<TcpStream> {
+    let mut new_ssl_conn = ssl_conn;
+    let mut attempts = 0;
+    loop {
+        if attempts > 2 {
+            error!(logger, "More than two keepalive attempts have been made.  Waiting one minute...");
+            thread::sleep(Duration::from_secs(60));
+        } else if attempts > 5 {
+            error!(logger, "More than five keepalive attempts have been made.  Giving up!");
+            return new_ssl_conn;
+        }
+        match audit::dispatch_keepalive(&mut new_ssl_conn) {
+            Ok(_) => {
+                debug!(logger, "Dispatched keepalive");
+                return new_ssl_conn;
+            },
+            Err(dispatch_error) => {
+                error!(logger, "Failed to dispatch keepalive: {}", dispatch_error.description());
+                error!(logger, "Restarting connection...");
+                new_ssl_conn = restart_connection(logger, new_ssl_conn, ssl_reconnector);
+                error!(logger, "Connection re-established.  Trying to send keepalive again...");
                 attempts += 1;
             },
         };
@@ -375,12 +406,16 @@ fn send_record(logger: &Logger, ssl_conn: ssl::SslStream<TcpStream>, ssl_reconne
 fn record_sender(logger: Logger, ssl_reconnector: SslReconnector, recv: Receiver<PendingTransfer>) {
     let mut ssl_conn = ssl_reconnector.connect();
     loop {
-        match recv.recv() {
+        match recv.recv_timeout(Duration::from_secs(30)) {
             Ok(pending) => {
                 ssl_conn = send_record(&logger, ssl_conn, &ssl_reconnector, &pending);
             },
             // If the other end closes, we're done.
-            Err(_) => break,
+            Err(RecvTimeoutError::Disconnected) => break,
+            // If the receive timed out, send a keepalive to the server.
+            Err(RecvTimeoutError::Timeout) => {
+                ssl_conn = send_keepalive(&logger, ssl_conn, &ssl_reconnector);
+            },
         }
     }
     match shutdown_ssl_connection(ssl_conn) {

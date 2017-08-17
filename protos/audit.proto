@@ -3,13 +3,13 @@ syntax = "proto2";
 // audit(1498852023.639:741): arch=c000003e syscall=59 success=yes exit=0 a0=7fffdaa8cbd0 a1=7f7af2a41cf8 a2=1b9f030 a3=598 items=2 ppid=7113 pid=7114 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts3 ses=2 comm="git" exe="/usr/bin/git" key=(null)
 // audit(1498852023.639:741): argc=3 a0="git" a1="rev-parse" a2="--git-dir"
 
-message AuditTimestamp {
+message SnitchTimestamp {
   required int64 timestamp = 1;
   required int64 timestamp_frac = 2;
 }
 
 message ProgramRun {
-  required AuditTimestamp timestamp = 1;
+  required SnitchTimestamp timestamp = 1;
   required string arch = 2;
   // This will probably always be 59
   required int32 syscall = 3;
@@ -34,9 +34,14 @@ message ProgramRun {
   repeated string args = 22;
 }
 
+message KeepAlive {
+  required SnitchTimestamp timestamp = 1;
+}
+
 // message_type determines content of payload:
 // 0 = error report (UTF-8 encoded text)
 // 1 = ProgramRun message
+// 2 = KeepAlive message
 message SnitchReport {
   required int32 message_type = 1;
   required bytes payload = 2;

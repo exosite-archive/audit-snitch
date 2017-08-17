@@ -22,7 +22,7 @@ use protobuf::Message as Message_imported_for_functions;
 use protobuf::ProtobufEnum as ProtobufEnum_imported_for_functions;
 
 #[derive(PartialEq,Clone,Default)]
-pub struct AuditTimestamp {
+pub struct SnitchTimestamp {
     // message fields
     timestamp: ::std::option::Option<i64>,
     timestamp_frac: ::std::option::Option<i64>,
@@ -32,20 +32,20 @@ pub struct AuditTimestamp {
 }
 
 // see codegen.rs for the explanation why impl Sync explicitly
-unsafe impl ::std::marker::Sync for AuditTimestamp {}
+unsafe impl ::std::marker::Sync for SnitchTimestamp {}
 
-impl AuditTimestamp {
-    pub fn new() -> AuditTimestamp {
+impl SnitchTimestamp {
+    pub fn new() -> SnitchTimestamp {
         ::std::default::Default::default()
     }
 
-    pub fn default_instance() -> &'static AuditTimestamp {
-        static mut instance: ::protobuf::lazy::Lazy<AuditTimestamp> = ::protobuf::lazy::Lazy {
+    pub fn default_instance() -> &'static SnitchTimestamp {
+        static mut instance: ::protobuf::lazy::Lazy<SnitchTimestamp> = ::protobuf::lazy::Lazy {
             lock: ::protobuf::lazy::ONCE_INIT,
-            ptr: 0 as *const AuditTimestamp,
+            ptr: 0 as *const SnitchTimestamp,
         };
         unsafe {
-            instance.get(AuditTimestamp::new)
+            instance.get(SnitchTimestamp::new)
         }
     }
 
@@ -104,7 +104,7 @@ impl AuditTimestamp {
     }
 }
 
-impl ::protobuf::Message for AuditTimestamp {
+impl ::protobuf::Message for SnitchTimestamp {
     fn is_initialized(&self) -> bool {
         if self.timestamp.is_none() {
             return false;
@@ -194,12 +194,12 @@ impl ::protobuf::Message for AuditTimestamp {
     }
 }
 
-impl ::protobuf::MessageStatic for AuditTimestamp {
-    fn new() -> AuditTimestamp {
-        AuditTimestamp::new()
+impl ::protobuf::MessageStatic for SnitchTimestamp {
+    fn new() -> SnitchTimestamp {
+        SnitchTimestamp::new()
     }
 
-    fn descriptor_static(_: ::std::option::Option<AuditTimestamp>) -> &'static ::protobuf::reflect::MessageDescriptor {
+    fn descriptor_static(_: ::std::option::Option<SnitchTimestamp>) -> &'static ::protobuf::reflect::MessageDescriptor {
         static mut descriptor: ::protobuf::lazy::Lazy<::protobuf::reflect::MessageDescriptor> = ::protobuf::lazy::Lazy {
             lock: ::protobuf::lazy::ONCE_INIT,
             ptr: 0 as *const ::protobuf::reflect::MessageDescriptor,
@@ -209,16 +209,16 @@ impl ::protobuf::MessageStatic for AuditTimestamp {
                 let mut fields = ::std::vec::Vec::new();
                 fields.push(::protobuf::reflect::accessor::make_option_accessor::<_, ::protobuf::types::ProtobufTypeInt64>(
                     "timestamp",
-                    AuditTimestamp::get_timestamp_for_reflect,
-                    AuditTimestamp::mut_timestamp_for_reflect,
+                    SnitchTimestamp::get_timestamp_for_reflect,
+                    SnitchTimestamp::mut_timestamp_for_reflect,
                 ));
                 fields.push(::protobuf::reflect::accessor::make_option_accessor::<_, ::protobuf::types::ProtobufTypeInt64>(
                     "timestamp_frac",
-                    AuditTimestamp::get_timestamp_frac_for_reflect,
-                    AuditTimestamp::mut_timestamp_frac_for_reflect,
+                    SnitchTimestamp::get_timestamp_frac_for_reflect,
+                    SnitchTimestamp::mut_timestamp_frac_for_reflect,
                 ));
-                ::protobuf::reflect::MessageDescriptor::new::<AuditTimestamp>(
-                    "AuditTimestamp",
+                ::protobuf::reflect::MessageDescriptor::new::<SnitchTimestamp>(
+                    "SnitchTimestamp",
                     fields,
                     file_descriptor_proto()
                 )
@@ -227,7 +227,7 @@ impl ::protobuf::MessageStatic for AuditTimestamp {
     }
 }
 
-impl ::protobuf::Clear for AuditTimestamp {
+impl ::protobuf::Clear for SnitchTimestamp {
     fn clear(&mut self) {
         self.clear_timestamp();
         self.clear_timestamp_frac();
@@ -235,13 +235,13 @@ impl ::protobuf::Clear for AuditTimestamp {
     }
 }
 
-impl ::std::fmt::Debug for AuditTimestamp {
+impl ::std::fmt::Debug for SnitchTimestamp {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         ::protobuf::text_format::fmt(self, f)
     }
 }
 
-impl ::protobuf::reflect::ProtobufValue for AuditTimestamp {
+impl ::protobuf::reflect::ProtobufValue for SnitchTimestamp {
     fn as_ref(&self) -> ::protobuf::reflect::ProtobufValueRef {
         ::protobuf::reflect::ProtobufValueRef::Message(self)
     }
@@ -250,7 +250,7 @@ impl ::protobuf::reflect::ProtobufValue for AuditTimestamp {
 #[derive(PartialEq,Clone,Default)]
 pub struct ProgramRun {
     // message fields
-    timestamp: ::protobuf::SingularPtrField<AuditTimestamp>,
+    timestamp: ::protobuf::SingularPtrField<SnitchTimestamp>,
     arch: ::protobuf::SingularField<::std::string::String>,
     syscall: ::std::option::Option<i32>,
     success: ::std::option::Option<bool>,
@@ -295,7 +295,7 @@ impl ProgramRun {
         }
     }
 
-    // required .AuditTimestamp timestamp = 1;
+    // required .SnitchTimestamp timestamp = 1;
 
     pub fn clear_timestamp(&mut self) {
         self.timestamp.clear();
@@ -306,13 +306,13 @@ impl ProgramRun {
     }
 
     // Param is passed by value, moved
-    pub fn set_timestamp(&mut self, v: AuditTimestamp) {
+    pub fn set_timestamp(&mut self, v: SnitchTimestamp) {
         self.timestamp = ::protobuf::SingularPtrField::some(v);
     }
 
     // Mutable pointer to the field.
     // If field is not initialized, it is initialized with default value first.
-    pub fn mut_timestamp(&mut self) -> &mut AuditTimestamp {
+    pub fn mut_timestamp(&mut self) -> &mut SnitchTimestamp {
         if self.timestamp.is_none() {
             self.timestamp.set_default();
         }
@@ -320,19 +320,19 @@ impl ProgramRun {
     }
 
     // Take field
-    pub fn take_timestamp(&mut self) -> AuditTimestamp {
-        self.timestamp.take().unwrap_or_else(|| AuditTimestamp::new())
+    pub fn take_timestamp(&mut self) -> SnitchTimestamp {
+        self.timestamp.take().unwrap_or_else(|| SnitchTimestamp::new())
     }
 
-    pub fn get_timestamp(&self) -> &AuditTimestamp {
-        self.timestamp.as_ref().unwrap_or_else(|| AuditTimestamp::default_instance())
+    pub fn get_timestamp(&self) -> &SnitchTimestamp {
+        self.timestamp.as_ref().unwrap_or_else(|| SnitchTimestamp::default_instance())
     }
 
-    fn get_timestamp_for_reflect(&self) -> &::protobuf::SingularPtrField<AuditTimestamp> {
+    fn get_timestamp_for_reflect(&self) -> &::protobuf::SingularPtrField<SnitchTimestamp> {
         &self.timestamp
     }
 
-    fn mut_timestamp_for_reflect(&mut self) -> &mut ::protobuf::SingularPtrField<AuditTimestamp> {
+    fn mut_timestamp_for_reflect(&mut self) -> &mut ::protobuf::SingularPtrField<SnitchTimestamp> {
         &mut self.timestamp
     }
 
@@ -1393,7 +1393,7 @@ impl ::protobuf::MessageStatic for ProgramRun {
         unsafe {
             descriptor.get(|| {
                 let mut fields = ::std::vec::Vec::new();
-                fields.push(::protobuf::reflect::accessor::make_singular_ptr_field_accessor::<_, ::protobuf::types::ProtobufTypeMessage<AuditTimestamp>>(
+                fields.push(::protobuf::reflect::accessor::make_singular_ptr_field_accessor::<_, ::protobuf::types::ProtobufTypeMessage<SnitchTimestamp>>(
                     "timestamp",
                     ProgramRun::get_timestamp_for_reflect,
                     ProgramRun::mut_timestamp_for_reflect,
@@ -1548,6 +1548,200 @@ impl ::std::fmt::Debug for ProgramRun {
 }
 
 impl ::protobuf::reflect::ProtobufValue for ProgramRun {
+    fn as_ref(&self) -> ::protobuf::reflect::ProtobufValueRef {
+        ::protobuf::reflect::ProtobufValueRef::Message(self)
+    }
+}
+
+#[derive(PartialEq,Clone,Default)]
+pub struct KeepAlive {
+    // message fields
+    timestamp: ::protobuf::SingularPtrField<SnitchTimestamp>,
+    // special fields
+    unknown_fields: ::protobuf::UnknownFields,
+    cached_size: ::protobuf::CachedSize,
+}
+
+// see codegen.rs for the explanation why impl Sync explicitly
+unsafe impl ::std::marker::Sync for KeepAlive {}
+
+impl KeepAlive {
+    pub fn new() -> KeepAlive {
+        ::std::default::Default::default()
+    }
+
+    pub fn default_instance() -> &'static KeepAlive {
+        static mut instance: ::protobuf::lazy::Lazy<KeepAlive> = ::protobuf::lazy::Lazy {
+            lock: ::protobuf::lazy::ONCE_INIT,
+            ptr: 0 as *const KeepAlive,
+        };
+        unsafe {
+            instance.get(KeepAlive::new)
+        }
+    }
+
+    // required .SnitchTimestamp timestamp = 1;
+
+    pub fn clear_timestamp(&mut self) {
+        self.timestamp.clear();
+    }
+
+    pub fn has_timestamp(&self) -> bool {
+        self.timestamp.is_some()
+    }
+
+    // Param is passed by value, moved
+    pub fn set_timestamp(&mut self, v: SnitchTimestamp) {
+        self.timestamp = ::protobuf::SingularPtrField::some(v);
+    }
+
+    // Mutable pointer to the field.
+    // If field is not initialized, it is initialized with default value first.
+    pub fn mut_timestamp(&mut self) -> &mut SnitchTimestamp {
+        if self.timestamp.is_none() {
+            self.timestamp.set_default();
+        }
+        self.timestamp.as_mut().unwrap()
+    }
+
+    // Take field
+    pub fn take_timestamp(&mut self) -> SnitchTimestamp {
+        self.timestamp.take().unwrap_or_else(|| SnitchTimestamp::new())
+    }
+
+    pub fn get_timestamp(&self) -> &SnitchTimestamp {
+        self.timestamp.as_ref().unwrap_or_else(|| SnitchTimestamp::default_instance())
+    }
+
+    fn get_timestamp_for_reflect(&self) -> &::protobuf::SingularPtrField<SnitchTimestamp> {
+        &self.timestamp
+    }
+
+    fn mut_timestamp_for_reflect(&mut self) -> &mut ::protobuf::SingularPtrField<SnitchTimestamp> {
+        &mut self.timestamp
+    }
+}
+
+impl ::protobuf::Message for KeepAlive {
+    fn is_initialized(&self) -> bool {
+        if self.timestamp.is_none() {
+            return false;
+        }
+        for v in &self.timestamp {
+            if !v.is_initialized() {
+                return false;
+            }
+        };
+        true
+    }
+
+    fn merge_from(&mut self, is: &mut ::protobuf::CodedInputStream) -> ::protobuf::ProtobufResult<()> {
+        while !is.eof()? {
+            let (field_number, wire_type) = is.read_tag_unpack()?;
+            match field_number {
+                1 => {
+                    ::protobuf::rt::read_singular_message_into(wire_type, is, &mut self.timestamp)?;
+                },
+                _ => {
+                    ::protobuf::rt::read_unknown_or_skip_group(field_number, wire_type, is, self.mut_unknown_fields())?;
+                },
+            };
+        }
+        ::std::result::Result::Ok(())
+    }
+
+    // Compute sizes of nested messages
+    #[allow(unused_variables)]
+    fn compute_size(&self) -> u32 {
+        let mut my_size = 0;
+        if let Some(ref v) = self.timestamp.as_ref() {
+            let len = v.compute_size();
+            my_size += 1 + ::protobuf::rt::compute_raw_varint32_size(len) + len;
+        }
+        my_size += ::protobuf::rt::unknown_fields_size(self.get_unknown_fields());
+        self.cached_size.set(my_size);
+        my_size
+    }
+
+    fn write_to_with_cached_sizes(&self, os: &mut ::protobuf::CodedOutputStream) -> ::protobuf::ProtobufResult<()> {
+        if let Some(ref v) = self.timestamp.as_ref() {
+            os.write_tag(1, ::protobuf::wire_format::WireTypeLengthDelimited)?;
+            os.write_raw_varint32(v.get_cached_size())?;
+            v.write_to_with_cached_sizes(os)?;
+        }
+        os.write_unknown_fields(self.get_unknown_fields())?;
+        ::std::result::Result::Ok(())
+    }
+
+    fn get_cached_size(&self) -> u32 {
+        self.cached_size.get()
+    }
+
+    fn get_unknown_fields(&self) -> &::protobuf::UnknownFields {
+        &self.unknown_fields
+    }
+
+    fn mut_unknown_fields(&mut self) -> &mut ::protobuf::UnknownFields {
+        &mut self.unknown_fields
+    }
+
+    fn as_any(&self) -> &::std::any::Any {
+        self as &::std::any::Any
+    }
+    fn as_any_mut(&mut self) -> &mut ::std::any::Any {
+        self as &mut ::std::any::Any
+    }
+    fn into_any(self: Box<Self>) -> ::std::boxed::Box<::std::any::Any> {
+        self
+    }
+
+    fn descriptor(&self) -> &'static ::protobuf::reflect::MessageDescriptor {
+        ::protobuf::MessageStatic::descriptor_static(None::<Self>)
+    }
+}
+
+impl ::protobuf::MessageStatic for KeepAlive {
+    fn new() -> KeepAlive {
+        KeepAlive::new()
+    }
+
+    fn descriptor_static(_: ::std::option::Option<KeepAlive>) -> &'static ::protobuf::reflect::MessageDescriptor {
+        static mut descriptor: ::protobuf::lazy::Lazy<::protobuf::reflect::MessageDescriptor> = ::protobuf::lazy::Lazy {
+            lock: ::protobuf::lazy::ONCE_INIT,
+            ptr: 0 as *const ::protobuf::reflect::MessageDescriptor,
+        };
+        unsafe {
+            descriptor.get(|| {
+                let mut fields = ::std::vec::Vec::new();
+                fields.push(::protobuf::reflect::accessor::make_singular_ptr_field_accessor::<_, ::protobuf::types::ProtobufTypeMessage<SnitchTimestamp>>(
+                    "timestamp",
+                    KeepAlive::get_timestamp_for_reflect,
+                    KeepAlive::mut_timestamp_for_reflect,
+                ));
+                ::protobuf::reflect::MessageDescriptor::new::<KeepAlive>(
+                    "KeepAlive",
+                    fields,
+                    file_descriptor_proto()
+                )
+            })
+        }
+    }
+}
+
+impl ::protobuf::Clear for KeepAlive {
+    fn clear(&mut self) {
+        self.clear_timestamp();
+        self.unknown_fields.clear();
+    }
+}
+
+impl ::std::fmt::Debug for KeepAlive {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        ::protobuf::text_format::fmt(self, f)
+    }
+}
+
+impl ::protobuf::reflect::ProtobufValue for KeepAlive {
     fn as_ref(&self) -> ::protobuf::reflect::ProtobufValueRef {
         ::protobuf::reflect::ProtobufValueRef::Message(self)
     }
@@ -1793,22 +1987,27 @@ impl ::protobuf::reflect::ProtobufValue for SnitchReport {
 }
 
 static file_descriptor_proto_data: &'static [u8] = b"\
-    \n\x0baudit.proto\";\n\x0eAuditTimestamp\x12\x11\n\ttimestamp\x18\x01\
-    \x20\x02(\x03\x12\x16\n\x0etimestamp_frac\x18\x02\x20\x02(\x03\"\xd8\x02\
-    \n\nProgramRun\x12\"\n\ttimestamp\x18\x01\x20\x02(\x0b2\x0f.AuditTimesta\
-    mp\x12\x0c\n\x04arch\x18\x02\x20\x02(\t\x12\x0f\n\x07syscall\x18\x03\x20\
-    \x02(\x05\x12\x0f\n\x07success\x18\x04\x20\x02(\x08\x12\x0c\n\x04exit\
-    \x18\x05\x20\x02(\x05\x12\x0b\n\x03pid\x18\x06\x20\x02(\x05\x12\x0c\n\
-    \x04ppid\x18\x07\x20\x02(\x05\x12\x0b\n\x03uid\x18\x08\x20\x02(\x05\x12\
-    \x0b\n\x03gid\x18\t\x20\x02(\x05\x12\x0c\n\x04auid\x18\n\x20\x02(\x05\
-    \x12\x0c\n\x04euid\x18\x0b\x20\x02(\x05\x12\x0c\n\x04egid\x18\x0c\x20\
-    \x02(\x05\x12\x0c\n\x04suid\x18\r\x20\x02(\x05\x12\x0c\n\x04sgid\x18\x0e\
-    \x20\x02(\x05\x12\r\n\x05fsuid\x18\x0f\x20\x02(\x05\x12\r\n\x05fsgid\x18\
-    \x10\x20\x02(\x05\x12\x0b\n\x03tty\x18\x11\x20\x01(\t\x12\x0c\n\x04comm\
-    \x18\x12\x20\x01(\t\x12\x0b\n\x03exe\x18\x13\x20\x01(\t\x12\x0b\n\x03key\
-    \x18\x14\x20\x01(\t\x12\x0c\n\x04subj\x18\x15\x20\x01(\t\x12\x0c\n\x04ar\
-    gs\x18\x16\x20\x03(\t\"5\n\x0cSnitchReport\x12\x14\n\x0cmessage_type\x18\
-    \x01\x20\x02(\x05\x12\x0f\n\x07payload\x18\x02\x20\x02(\x0c\
+    \n\x0baudit.proto\"V\n\x0fSnitchTimestamp\x12\x1c\n\ttimestamp\x18\x01\
+    \x20\x02(\x03R\ttimestamp\x12%\n\x0etimestamp_frac\x18\x02\x20\x02(\x03R\
+    \rtimestampFrac\"\xe4\x03\n\nProgramRun\x12.\n\ttimestamp\x18\x01\x20\
+    \x02(\x0b2\x10.SnitchTimestampR\ttimestamp\x12\x12\n\x04arch\x18\x02\x20\
+    \x02(\tR\x04arch\x12\x18\n\x07syscall\x18\x03\x20\x02(\x05R\x07syscall\
+    \x12\x18\n\x07success\x18\x04\x20\x02(\x08R\x07success\x12\x12\n\x04exit\
+    \x18\x05\x20\x02(\x05R\x04exit\x12\x10\n\x03pid\x18\x06\x20\x02(\x05R\
+    \x03pid\x12\x12\n\x04ppid\x18\x07\x20\x02(\x05R\x04ppid\x12\x10\n\x03uid\
+    \x18\x08\x20\x02(\x05R\x03uid\x12\x10\n\x03gid\x18\t\x20\x02(\x05R\x03gi\
+    d\x12\x12\n\x04auid\x18\n\x20\x02(\x05R\x04auid\x12\x12\n\x04euid\x18\
+    \x0b\x20\x02(\x05R\x04euid\x12\x12\n\x04egid\x18\x0c\x20\x02(\x05R\x04eg\
+    id\x12\x12\n\x04suid\x18\r\x20\x02(\x05R\x04suid\x12\x12\n\x04sgid\x18\
+    \x0e\x20\x02(\x05R\x04sgid\x12\x14\n\x05fsuid\x18\x0f\x20\x02(\x05R\x05f\
+    suid\x12\x14\n\x05fsgid\x18\x10\x20\x02(\x05R\x05fsgid\x12\x10\n\x03tty\
+    \x18\x11\x20\x01(\tR\x03tty\x12\x12\n\x04comm\x18\x12\x20\x01(\tR\x04com\
+    m\x12\x10\n\x03exe\x18\x13\x20\x01(\tR\x03exe\x12\x10\n\x03key\x18\x14\
+    \x20\x01(\tR\x03key\x12\x12\n\x04subj\x18\x15\x20\x01(\tR\x04subj\x12\
+    \x12\n\x04args\x18\x16\x20\x03(\tR\x04args\";\n\tKeepAlive\x12.\n\ttimes\
+    tamp\x18\x01\x20\x02(\x0b2\x10.SnitchTimestampR\ttimestamp\"K\n\x0cSnitc\
+    hReport\x12!\n\x0cmessage_type\x18\x01\x20\x02(\x05R\x0bmessageType\x12\
+    \x18\n\x07payload\x18\x02\x20\x02(\x0cR\x07payload\
 ";
 
 static mut file_descriptor_proto_lazy: ::protobuf::lazy::Lazy<::protobuf::descriptor::FileDescriptorProto> = ::protobuf::lazy::Lazy {

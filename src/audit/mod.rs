@@ -1,12 +1,12 @@
 use std::{io, i64, i32, fmt, str};
 
 use std::io::Write;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use std::error::Error;
 
 use protobuf::{CodedOutputStream, Message};
 use byteorder::{NetworkEndian, WriteBytesExt};
-use self::protos::{AuditTimestamp, ProgramRun, SnitchReport};
+use self::protos::{SnitchTimestamp, ProgramRun, KeepAlive, SnitchReport};
 
 mod protos;
 mod aubin;
@@ -27,6 +27,7 @@ const AUDIT_ARCH_LE: u32 = 0x40000000;
 #[allow(dead_code)]
 pub const REPORT_TYPE_ERROR: i32 = 0;
 pub const REPORT_TYPE_PROGRAMRUN: i32 = 1;
+pub const REPORT_TYPE_KEEPALIVE: i32 = 2;
 
 pub enum SyscallArch {
     Unknown,
@@ -161,7 +162,33 @@ fn write_pb_and_flush<T: Message>(cos: &mut CodedOutputStream, msg: &T) -> io::R
     return Ok(());
 }
 
-//pub fn dispatch_audit_event<T: Write>(stream: &mut T, rec1: &AuditRecord, rec2: &AuditRecord) -> io::Result<()> {
+pub fn dispatch_keepalive<T: Write>(stream: &mut T) -> io::Result<()> {
+    let now = SystemTime::now();
+    let now_ts = match now.duration_since(UNIX_EPOCH) {
+        Ok(ts) => ts,
+        // This should never happen.
+        Err(_) => Duration::from_millis(0),
+    };
+
+    let mut ts = SnitchTimestamp::new();
+    ts.set_timestamp(now_ts.as_secs() as i64);
+    ts.set_timestamp_frac(now_ts.subsec_nanos() as i64);
+
+    let mut keepalive = KeepAlive::new();
+    keepalive.set_timestamp(ts);
+
+    let mut msg = SnitchReport::new();
+    msg.set_message_type(REPORT_TYPE_KEEPALIVE);
+    let mut payload = msg.take_payload();
+    write_pb_and_flush(&mut CodedOutputStream::vec(&mut payload), &keepalive)?;
+    msg.set_payload(payload);
+
+    let mut full_message = Vec::new();
+    write_pb_and_flush(&mut CodedOutputStream::vec(&mut full_message), &msg)?;
+    stream.write_u32::<NetworkEndian>(full_message.len() as u32)?;
+    stream.write_all(&full_message)
+}
+
 pub fn dispatch_audit_event<T: Write>(stream: &mut T, syscall: &SyscallRecord, execve: &ExecveRecord) -> io::Result<()> {
     use self::SyscallArch::*;
 
@@ -170,7 +197,7 @@ pub fn dispatch_audit_event<T: Write>(stream: &mut T, syscall: &SyscallRecord, e
     // extremely close together.  In fact, they will
     // probably have the same timestamp, right down
     // to the fraction.
-    let mut ts = AuditTimestamp::new();
+    let mut ts = SnitchTimestamp::new();
     ts.set_timestamp(syscall.timestamp);
     ts.set_timestamp_frac(syscall.timestamp_frac);
 
